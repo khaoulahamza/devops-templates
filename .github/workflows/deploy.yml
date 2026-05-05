@@ -1,0 +1,18 @@
+name: Deploy Template
+
+on:
+  workflow_call:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Build Docker image
+        run: docker build -t nexus/app:${{ github.sha }} .
+
+      - name: Push Docker image
+        run: docker push nexus/app:${{ github.sha }}

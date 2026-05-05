@@ -14,16 +14,15 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4  # Update to v4 to fix Node.js warning
+      - uses: actions/checkout@v4
 
-      - name: Allow insecure registry (HTTP only)
+      - name: Allow insecure registry
         run: |
           echo '{"insecure-registries": ["${{ secrets.NEXUS_REGISTRY }}"]}' | sudo tee /etc/docker/daemon.json
           sudo systemctl restart docker
 
       - name: Login to Nexus Registry
-        uses: docker/login-action@v3  # Update to v3
+        uses: docker/login-action@v3
         with:
           registry: ${{ secrets.NEXUS_REGISTRY }}
           username: ${{ secrets.NEXUS_USERNAME }}
@@ -33,18 +32,4 @@ jobs:
         run: docker build -t ${{ secrets.NEXUS_REGISTRY }}/app:${{ github.sha }} .
 
       - name: Push Docker image
-        run: docker push ${{ secrets.NEXUS_REGISTRY }}/app:${{ github.sha }} Checkout
-        uses: actions/checkout@v3
-
-      - name: Login to Nexus Registry
-        uses: docker/login-action@v2
-        with:
-          registry: ${{ inputs.registry_url }}
-          username: ${{ secrets.NEXUS_USERNAME }}
-          password: ${{ secrets.NEXUS_PASSWORD }}
-
-      - name: Build Docker image
-        run: docker build -t ${{ inputs.registry_url }}/app:${{ github.sha }} .
-
-      - name: Push Docker image
-        run: docker push ${{ inputs.registry_url }}/app:${{ github.sha }}
+        run: docker push ${{ secrets.NEXUS_REGISTRY }}/app:${{ github.sha }}

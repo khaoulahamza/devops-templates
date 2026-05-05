@@ -7,8 +7,13 @@ on:
         required: true
       NEXUS_PASSWORD:
         required: true
-      NEXUS_REGISTRY:
+      # NEXUS_REGISTRY n'est plus utilisé – on va le mettre en dur
+    inputs:
+      nexus_registry:
+        description: 'Nexus Docker registry URL (localhost:port)'
         required: true
+        default: 'localhost:8081'
+        type: string
 
 jobs:
   deploy:
@@ -19,14 +24,14 @@ jobs:
 
       - name: Allow insecure registry
         run: |
-          echo '{"insecure-registries": ["${{ secrets.NEXUS_REGISTRY }}"]}' | sudo tee /etc/docker/daemon.json
+          echo '{"insecure-registries": ["${{ inputs.nexus_registry }}"]}' | sudo tee /etc/docker/daemon.json
           sudo systemctl restart docker
 
-      - name: Log in to Nexus Registry (commande directe)
-        run: echo "${{ secrets.NEXUS_PASSWORD }}" | docker login ${{ secrets.NEXUS_REGISTRY }} -u ${{ secrets.NEXUS_USERNAME }} --password-stdin
+      - name: Log in to Nexus Registry
+        run: echo "${{ secrets.NEXUS_PASSWORD }}" | docker login ${{ inputs.nexus_registry }} -u ${{ secrets.NEXUS_USERNAME }} --password-stdin
 
       - name: Build Docker image
-        run: docker build -t ${{ secrets.NEXUS_REGISTRY }}/app:${{ github.sha }} .
+        run: docker build -t ${{ inputs.nexus_registry }}/app:${{ github.sha }} .
 
       - name: Push Docker image
-        run: docker push ${{ secrets.NEXUS_REGISTRY }}/app:${{ github.sha }}
+        run: docker push ${{ inputs.nexus_registry }}/app:${{ github.sha }}

@@ -7,18 +7,33 @@ on:
         required: true
       NEXUS_PASSWORD:
         required: true
-    inputs:
-      registry_url:
-        description: 'Nexus Docker registry URL (IP:port)'
+      NEXUS_REGISTRY:
         required: true
-        type: string
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
+        uses: actions/checkout@v4  # Update to v4 to fix Node.js warning
+
+      - name: Allow insecure registry (HTTP only)
+        run: |
+          echo '{"insecure-registries": ["${{ secrets.NEXUS_REGISTRY }}"]}' | sudo tee /etc/docker/daemon.json
+          sudo systemctl restart docker
+
+      - name: Login to Nexus Registry
+        uses: docker/login-action@v3  # Update to v3
+        with:
+          registry: ${{ secrets.NEXUS_REGISTRY }}
+          username: ${{ secrets.NEXUS_USERNAME }}
+          password: ${{ secrets.NEXUS_PASSWORD }}
+
+      - name: Build Docker image
+        run: docker build -t ${{ secrets.NEXUS_REGISTRY }}/app:${{ github.sha }} .
+
+      - name: Push Docker image
+        run: docker push ${{ secrets.NEXUS_REGISTRY }}/app:${{ github.sha }} Checkout
         uses: actions/checkout@v3
 
       - name: Login to Nexus Registry

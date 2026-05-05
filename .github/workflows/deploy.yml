@@ -7,31 +7,26 @@ on:
         required: true
       NEXUS_PASSWORD:
         required: true
-      # NEXUS_REGISTRY n'est plus utilisé ici, on le met en dur
       NEXUS_REGISTRY:
-        required: false
+        required: true
 
 jobs:
   deploy:
-    runs-on: self-hosted   # Important : force l'utilisation de votre VM
+    runs-on: self-hosted
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Allow insecure registry
         run: |
-          echo '{"insecure-registries": ["localhost:8081"]}' | sudo tee /etc/docker/daemon.json
+          echo '{"insecure-registries": ["${{ secrets.NEXUS_REGISTRY }}"]}' | sudo tee /etc/docker/daemon.json
           sudo systemctl restart docker
 
-      - name: Log in to Nexus Registry
-        uses: docker/login-action@v3
-        with:
-          registry: localhost:8081
-          username: ${{ secrets.NEXUS_USERNAME }}
-          password: ${{ secrets.NEXUS_PASSWORD }}
+      - name: Log in to Nexus Registry (commande directe)
+        run: echo "${{ secrets.NEXUS_PASSWORD }}" | docker login ${{ secrets.NEXUS_REGISTRY }} -u ${{ secrets.NEXUS_USERNAME }} --password-stdin
 
       - name: Build Docker image
-        run: docker build -t localhost:8081/app:${{ github.sha }} .
+        run: docker build -t ${{ secrets.NEXUS_REGISTRY }}/app:${{ github.sha }} .
 
       - name: Push Docker image
-        run: docker push localhost:8081/app:${{ github.sha }}
+        run: docker push ${{ secrets.NEXUS_REGISTRY }}/app:${{ github.sha }}

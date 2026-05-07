@@ -9,13 +9,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Allow insecure registry
+      - name: Configure Docker for insecure registry
         run: |
+          sudo mkdir -p /etc/docker
           echo '{"insecure-registries": ["localhost:8085"]}' | sudo tee /etc/docker/daemon.json
           sudo systemctl restart docker
+          # Attendre que Docker redémarre
+          sleep 5
+          # Vérifier la configuration
+          cat /etc/docker/daemon.json
+          docker info | grep -A 5 "Insecure Registries"
 
       - name: Docker login
-        run: echo "nexus111" | docker login localhost:8085 -u admin --password-stdin
+        run: |
+          echo "nexus111" | docker login localhost:8085 -u admin --password-stdin
+          # Vérifier que le login a fonctionné
+          docker system info
 
       - name: Build image
         run: docker build -t localhost:8085/docker-hub/app:${{ github.sha }} .

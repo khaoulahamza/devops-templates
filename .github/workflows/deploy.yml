@@ -15,7 +15,7 @@ jobs:
           sudo systemctl restart docker
 
       - name: Docker login
-        run: echo "VOTRE_MOT_DE_PASSE_ADMIN" | docker login 192.168.1.239:8081 -u admin --password-stdin
+        run: echo "nexus111" | docker login 192.168.1.239:8081 -u admin --password-stdin
 
       - name: Build image
         run: docker build -t 192.168.1.239:8081/privatekh/app:${{ github.sha }} .

@@ -1,0 +1,32 @@
+# Valeurs par défaut (à surcharger par chaque application)
+replicaCount: 1
+
+image:
+  repository: ""           # À remplacer par l'app
+  tag: latest
+  pullPolicy: IfNotPresent
+
+imagePullSecrets:
+  - name: nexus-registry-secret
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 80
+
+ingress:
+  enabled: false
+  className: nginx
+  host: ""
+  path: /
+  pathType: Prefix
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+
+env: []                   # Variables d'environnement

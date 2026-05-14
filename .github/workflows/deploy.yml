@@ -32,3 +32,15 @@ jobs:
         run: |
           docker push 192.168.1.239:8085/selfkhaoula/app:${{ github.sha }}
           docker push 192.168.1.239:8085/selfkhaoula/app:latest
+
+      - name: Update GitOps values
+        run: |
+          git clone https://x-access-token:${{ secrets.GITOPS_TOKEN }}@github.com/khaoulahamza/gitops-environments.git
+          cd gitops-environments
+          sed -i "s|tag:.*|tag: \"${{ github.sha }}\"|" \
+            environments/staging/my-angular-app/values.yaml
+          git config user.email "ci@github.com"
+          git config user.name "GitHub Actions"
+          git add .
+          git commit -m "update image tag to ${{ github.sha }}"
+          git push

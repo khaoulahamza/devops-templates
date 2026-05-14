@@ -1,5 +1,4 @@
 name: Deploy Template
-
 on:
   workflow_call:
 
@@ -9,17 +8,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure Docker for insecure registry (IPv4 only)
+      - name: Trust Nexus self-signed certificate
         run: |
-          sudo mkdir -p /etc/docker
-          echo '{"insecure-registries": ["192.168.1.239:8085"]}' | sudo tee /etc/docker/daemon.json
-          sleep 3
+          sudo cp /etc/docker/certs.d/192.168.1.239:8085/ca.crt \
+            /usr/local/share/ca-certificates/nexus.crt
+          sudo update-ca-certificates
 
-      - name: Docker login (using IPv4)
-        run: echo "nexus111" | docker login 192.168.1.239:8085 -u admin --password-stdin
+      - name: Docker login
+        run: |
+          echo "nexus111" | docker login https://192.168.1.239:8085 \
+            -u admin --password-stdin
 
       - name: Build image
-        run: docker build -t 192.168.1.239:8085/docker-hub/app:${{ github.sha }} .
+        run: |
+          docker build -t 192.168.1.239:8085/nexusprivate/app:${{ github.sha }} \
+                       -t 192.168.1.239:8085/nexusprivate/app:latest .
 
       - name: Push image
-        run: docker push 192.168.1.239:8085/docker-hub/app:${{ github.sha }}
+        run: |
+          docker push 192.168.1.239:8085/nexusprivate/app:${{ github.sha }}
+          docker push 192.168.1.239:8085/nexusprivate/app:latest

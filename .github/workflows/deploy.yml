@@ -10,21 +10,25 @@ jobs:
 
       - name: Trust Nexus self-signed certificate
         run: |
-          sudo cp /etc/docker/certs.d/192.168.1.239:8085/ca.crt \
+          sudo mkdir -p /etc/docker/certs.d/192.168.1.239:8085
+          sudo cp /home/ubuntu/nexus/certs/nexus.crt \
+            /etc/docker/certs.d/192.168.1.239:8085/ca.crt
+          sudo cp /home/ubuntu/nexus/certs/nexus.crt \
             /usr/local/share/ca-certificates/nexus.crt
           sudo update-ca-certificates
 
       - name: Docker login
         run: |
-          echo "nexus111" | docker login https://192.168.1.239:8085 \
+          echo "nexus111" | docker login 192.168.1.239:8085 \
             -u admin --password-stdin
 
       - name: Build image
         run: |
-          docker build -t 192.168.1.239:8085/nexusprivate/app:${{ github.sha }} \
-                       -t 192.168.1.239:8085/nexusprivate/app:latest .
+          docker build \
+            -t 192.168.1.239:8085/selfkhaoula/app:${{ github.sha }} \
+            -t 192.168.1.239:8085/selfkhaoula/app:latest .
 
       - name: Push image
         run: |
-          docker push 192.168.1.239:8085/nexusprivate/app:${{ github.sha }}
-          docker push 192.168.1.239:8085/nexusprivate/app:latest
+          docker push 192.168.1.239:8085/selfkhaoula/app:${{ github.sha }}
+          docker push 192.168.1.239:8085/selfkhaoula/app:latest

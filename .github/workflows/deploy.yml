@@ -1,4 +1,4 @@
-name: Deploy Template Debug
+name: Deploy Template
 
 on:
   workflow_call:
@@ -13,90 +13,65 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # =========================
-      # 1. DEBUG SECRET (SANS EXPOSER)
-      # =========================
-      - name: Debug secret presence
+      - name: Trust Nexus self-signed certificate
+        run: |
+          sudo mkdir -p /etc/docker/certs.d/192.168.1.239:8085
+          sudo cp /home/ubuntu/nexus/certs/nexus.crt \
+            /etc/docker/certs.d/192.168.1.239:8085/ca.crt
+          sudo cp /home/ubuntu/nexus/certs/nexus.crt \
+            /usr/local/share/ca-certificates/nexus.crt
+          sudo update-ca-certificates
+
+      - name: Docker login
+        run: |
+          echo "nexus111" | docker login 192.168.1.239:8085 \
+            -u admin --password-stdin
+
+      - name: Build image
+        run: |
+          docker build \
+            -t 192.168.1.239:8085/selfkhaoula/app:${{ github.sha }} \
+            -t 192.168.1.239:8085/selfkhaoula/app:latest .
+
+      - name: Push image
+        run: |
+          docker push 192.168.1.239:8085/selfkhaoula/app:${{ github.sha }}
+          docker push 192.168.1.239:8085/selfkhaoula/app:latest
+
+      - name: Update GitOps values
         env:
           GITOPS_PAT: ${{ secrets.GITOPS_TOKEN }}
         run: |
-          echo "=== DEBUG SECRET ==="
-
-          if [ -z "$GITOPS_PAT" ]; then
-            echo "❌ SECRET VIDE OU NON TRANSMIS"
+          # Vérifier que le token est bien reçu
+          if [ -z "${GITOPS_PAT}" ]; then
+            echo "❌ Le secret GITOPS_TOKEN n'est pas transmis au workflow."
             exit 1
-          else
-            echo "✅ SECRET BIEN REÇU (longueur): ${#GITOPS_PAT}"
           fi
+          echo "✅ Secret reçu (longueur: ${#GITOPS_PAT})"
 
-      # =========================
-      # 2. DEBUG GIT CONFIG
-      # =========================
-      - name: Debug git config
-        run: |
-          git --version
-          git config --global --list || true
-
-      # =========================
-      # 3. CLONE AVEC TOKEN (DEBUG AUTH)
-      # =========================
-      - name: Clone repo GitOps (debug auth)
-        env:
-          GITOPS_PAT: ${{ secrets.GITOPS_TOKEN }}
-        run: |
-          echo "=== CLONING REPO ==="
-
-          set -x
-
+          # Cloner avec le token dans l'URL
           git clone https://x-access-token:${GITOPS_PAT}@github.com/khaoulahamza/gitops-environments.git
-
-          cd gitops-environments
-          git status
-
-      # =========================
-      # 4. MODIFICATION FILE
-      # =========================
-      - name: Update values.yaml
-        run: |
           cd gitops-environments
 
-          echo "=== FILE CHECK ==="
-          find . -name "values.yaml"
-
-          sed -i "s|tag:.*|tag: \"${{ github.sha }}\"|" \
-            environments/staging/my-angular-app/values.yaml
-
-          cat environments/staging/my-angular-app/values.yaml
-
-      # =========================
-      # 5. COMMIT DEBUG
-      # =========================
-      - name: Commit changes
-        run: |
-          cd gitops-environments
+          # Reconfigurer le remote pour qu'il utilise aussi le token (sécurité)
+          git remote set-url origin https://x-access-token:${GITOPS_PAT}@github.com/khaoulahamza/gitops-environments.git
 
           git config user.email "ci@github.com"
           git config user.name "GitHub Actions"
 
+          # Vérifier l'existence du fichier values.yaml
+          if [ ! -f "environments/staging/my-angular-app/values.yaml" ]; then
+            echo "❌ Fichier introuvable : environments/staging/my-angular-app/values.yaml"
+            find . -name "values.yaml"
+            exit 1
+          fi
+
+          # Mettre à jour le tag
+          sed -i "s|tag:.*|tag: \"${{ github.sha }}\"|" \
+            environments/staging/my-angular-app/values.yaml
+
           git add .
+          git commit -m "update image tag to ${{ github.sha }}" || echo "Aucun changement à committer"
 
-          git status
-
-          git commit -m "update image tag to ${{ github.sha }}" || echo "No changes"
-
-      # =========================
-      # 6. PUSH DEBUG
-      # =========================
-      - name: Push changes (debug)
-        env:
-          GITOPS_PAT: ${{ secrets.GITOPS_TOKEN }}
-        run: |
-          cd gitops-environments
-
-          echo "=== PUSH DEBUG ==="
-
-          set -x
-
-          git remote -v
-
+          # Pousser avec l'URL complète contenant le token
           git push https://x-access-token:${GITOPS_PAT}@github.com/khaoulahamza/gitops-environments.git main

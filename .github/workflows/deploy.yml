@@ -1,20 +1,25 @@
 name: Deploy Template
+
 on:
   workflow_call:
 
 jobs:
   deploy:
     runs-on: self-hosted
+
     steps:
       - uses: actions/checkout@v4
 
       - name: Trust Nexus self-signed certificate
         run: |
           sudo mkdir -p /etc/docker/certs.d/192.168.1.239:8085
+
           sudo cp /home/ubuntu/nexus/certs/nexus.crt \
             /etc/docker/certs.d/192.168.1.239:8085/ca.crt
+
           sudo cp /home/ubuntu/nexus/certs/nexus.crt \
             /usr/local/share/ca-certificates/nexus.crt
+
           sudo update-ca-certificates
 
       - name: Docker login
@@ -34,33 +39,32 @@ jobs:
           docker push 192.168.1.239:8085/selfkhaoula/app:latest
 
       - name: Update GitOps values
+        env:
+          GITOPS_PAT: ${{ secrets.GITOPS_TOKEN }}
+
         run: |
-          # Clone avec vérification
-          git clone https://x-access-token:${{ secrets.GITOPS_TOKEN }}@github.com/khaoulahamza/gitops-environments.git
-          if [ $? -ne 0 ]; then
-            echo "Failed to clone gitops-environments"
-            exit 1
-          fi
-          
+          # Cloner le repo GitOps
+          git clone https://x-access-token:${GITOPS_PAT}@github.com/khaoulahamza/gitops-environments.git
+
           cd gitops-environments
-          
-          # Vérifier si le fichier existe
+
+          # Config git
+          git config user.email "ci@github.com"
+          git config user.name "GitHub Actions"
+
+          # Vérifier le fichier
           if [ ! -f "environments/staging/my-angular-app/values.yaml" ]; then
-            echo "File not found: environments/staging/my-angular-app/values.yaml"
-            ls -la environments/staging/
+            echo "❌ File not found!"
+            find . -name "values.yaml"
             exit 1
           fi
-          
+
           # Mettre à jour le tag
           sed -i "s|tag:.*|tag: \"${{ github.sha }}\"|" \
             environments/staging/my-angular-app/values.yaml
-          
-          # Configurer git
-          git config user.email "ci@github.com"
-          git config user.name "GitHub Actions"
-          
-          # Commit et push
+
           git add .
-          git commit -m "update image tag to ${{ github.sha }}"
-          
+
+          git commit -m "update image tag to ${{ github.sha }}" || echo "No changes to commit"
+
           git push origin main

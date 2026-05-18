@@ -63,5 +63,4 @@ jobs:
           git add .
           git commit -m "update image tag to ${{ github.sha }}"
           
-          # PUSH CORRIGÉ - spécifier la branche
           git push origin main

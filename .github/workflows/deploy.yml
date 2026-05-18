@@ -41,10 +41,13 @@ jobs:
       - name: Update GitOps values
         env:
           GITOPS_PAT: ${{ secrets.GITOPS_TOKEN }}
-
         run: |
-          # Cloner le repo GitOps
-          git clone https://x-access-token:${GITOPS_PAT}@github.com/khaoulahamza/gitops-environments.git
+          # Configurer git pour utiliser le token
+          git config --global credential.helper store
+          echo "https://x-access-token:${GITOPS_PAT}@github.com" > ~/.git-credentials
+
+          # Cloner normalement
+          git clone https://github.com/khaoulahamza/gitops-environments.git
 
           cd gitops-environments
 
@@ -52,19 +55,18 @@ jobs:
           git config user.email "ci@github.com"
           git config user.name "GitHub Actions"
 
-          # Vérifier le fichier
+          # Vérifier et mettre à jour
           if [ ! -f "environments/staging/my-angular-app/values.yaml" ]; then
             echo "❌ File not found!"
             find . -name "values.yaml"
             exit 1
           fi
 
-          # Mettre à jour le tag
           sed -i "s|tag:.*|tag: \"${{ github.sha }}\"|" \
             environments/staging/my-angular-app/values.yaml
 
           git add .
-
           git commit -m "update image tag to ${{ github.sha }}" || echo "No changes to commit"
 
+          # Push
           git push origin main

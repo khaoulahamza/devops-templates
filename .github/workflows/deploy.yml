@@ -35,12 +35,33 @@ jobs:
 
       - name: Update GitOps values
         run: |
+          # Clone avec vérification
           git clone https://x-access-token:${{ secrets.GITOPS_TOKEN }}@github.com/khaoulahamza/gitops-environments.git
+          if [ $? -ne 0 ]; then
+            echo "Failed to clone gitops-environments"
+            exit 1
+          fi
+          
           cd gitops-environments
+          
+          # Vérifier si le fichier existe
+          if [ ! -f "environments/staging/my-angular-app/values.yaml" ]; then
+            echo "File not found: environments/staging/my-angular-app/values.yaml"
+            ls -la environments/staging/
+            exit 1
+          fi
+          
+          # Mettre à jour le tag
           sed -i "s|tag:.*|tag: \"${{ github.sha }}\"|" \
             environments/staging/my-angular-app/values.yaml
+          
+          # Configurer git
           git config user.email "ci@github.com"
           git config user.name "GitHub Actions"
+          
+          # Commit et push
           git add .
           git commit -m "update image tag to ${{ github.sha }}"
-          git push
+          
+          # PUSH CORRIGÉ - spécifier la branche
+          git push origin main

@@ -13,7 +13,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Trust Nexus self-signed certificate
+      # ✅ Nom de l'app = nom du repo, normalisé en kebab-case minuscule
+      - name: Set APP_NAME
+        run: |
+          APP_NAME=$(echo "${{ github.event.repository.name }}" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed 's/[^a-z0-9-]/-/g')
+          echo "APP_NAME=${APP_NAME}" >> $GITHUB_ENV
+
+      - name: Trust Nexus certificate
         run: |
           sudo mkdir -p /etc/docker/certs.d/192.168.1.239:8085
           sudo cp /home/ubuntu/nexus/certs/nexus.crt \
@@ -27,51 +35,52 @@ jobs:
           echo "nexus111" | docker login 192.168.1.239:8085 \
             -u admin --password-stdin
 
+      # ✅ Image propre par app, tag = sha uniquement (pas de latest)
       - name: Build image
         run: |
           docker build \
-            -t 192.168.1.239:8085/selfkhaoula/app:${{ github.sha }} \
-            -t 192.168.1.239:8085/selfkhaoula/app:latest .
+            -t 192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}:${{ github.sha }} .
 
       - name: Push image
         run: |
-          docker push 192.168.1.239:8085/selfkhaoula/app:${{ github.sha }}
-          docker push 192.168.1.239:8085/selfkhaoula/app:latest
+          docker push 192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}:${{ github.sha }}
 
       - name: Update GitOps values
         env:
           GITOPS_PAT: ${{ secrets.GITOPS_TOKEN }}
         run: |
-          # Vérifier que le token est bien reçu
           if [ -z "${GITOPS_PAT}" ]; then
-            echo "❌ Le secret GITOPS_TOKEN n'est pas transmis au workflow."
+            echo "❌ GITOPS_TOKEN manquant."
             exit 1
           fi
-          echo "✅ Secret reçu (longueur: ${#GITOPS_PAT})"
 
-          # Cloner avec le token dans l'URL
           git clone https://x-access-token:${GITOPS_PAT}@github.com/khaoulahamza/gitops-environments.git
           cd gitops-environments
 
-          # Reconfigurer le remote pour qu'il utilise aussi le token (sécurité)
-          git remote set-url origin https://x-access-token:${GITOPS_PAT}@github.com/khaoulahamza/gitops-environments.git
-
+          git remote set-url origin \
+            https://x-access-token:${GITOPS_PAT}@github.com/khaoulahamza/gitops-environments.git
           git config user.email "ci@github.com"
           git config user.name "GitHub Actions"
 
-          # Vérifier l'existence du fichier values.yaml
-          if [ ! -f "environments/staging/my-angular-app/values.yaml" ]; then
-            echo "❌ Fichier introuvable : environments/staging/my-angular-app/values.yaml"
+          # ✅ Chemin dynamique selon l'app
+          VALUES_PATH="environments/staging/${{ env.APP_NAME }}/values.yaml"
+
+          if [ ! -f "${VALUES_PATH}" ]; then
+            echo "❌ Fichier introuvable : ${VALUES_PATH}"
             find . -name "values.yaml"
             exit 1
           fi
 
-          # Mettre à jour le tag
+          # ✅ Met à jour repository ET tag
+          sed -i "s|repository:.*|repository: \"192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}\"|" \
+            "${VALUES_PATH}"
           sed -i "s|tag:.*|tag: \"${{ github.sha }}\"|" \
-            environments/staging/my-angular-app/values.yaml
+            "${VALUES_PATH}"
 
           git add .
-          git commit -m "update image tag to ${{ github.sha }}" || echo "Aucun changement à committer"
+          git commit -m "[${{ env.APP_NAME }}] image → ${{ github.sha }}" \
+            || echo "Aucun changement"
 
-          # Pousser avec l'URL complète contenant le token
-          git push https://x-access-token:${GITOPS_PAT}@github.com/khaoulahamza/gitops-environments.git main
+          git push \
+            https://x-access-token:${GITOPS_PAT}@github.com/khaoulahamza/gitops-environments.git \
+            main

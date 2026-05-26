@@ -1,5 +1,4 @@
 name: Deploy Template
-
 on:
   workflow_call:
     secrets:
@@ -9,11 +8,9 @@ on:
 jobs:
   deploy:
     runs-on: self-hosted
-
     steps:
       - uses: actions/checkout@v4
 
-      # ✅ Nom de l'app = nom du repo, normalisé en kebab-case minuscule
       - name: Set APP_NAME
         run: |
           APP_NAME=$(echo "${{ github.event.repository.name }}" \
@@ -35,7 +32,6 @@ jobs:
           echo "nexus111" | docker login 192.168.1.239:8085 \
             -u admin --password-stdin
 
-      # ✅ Image propre par app, tag = sha uniquement (pas de latest)
       - name: Build image
         run: |
           docker build \
@@ -45,42 +41,89 @@ jobs:
         run: |
           docker push 192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}:${{ github.sha }}
 
-      - name: Update GitOps values
+      - name: Update GitOps repo
         env:
           GITOPS_PAT: ${{ secrets.GITOPS_TOKEN }}
         run: |
-          if [ -z "${GITOPS_PAT}" ]; then
-            echo "❌ GITOPS_TOKEN manquant."
-            exit 1
-          fi
-
           git clone https://x-access-token:${GITOPS_PAT}@github.com/khaoulahamza/gitops-environments.git
           cd gitops-environments
-
-          git remote set-url origin \
-            https://x-access-token:${GITOPS_PAT}@github.com/khaoulahamza/gitops-environments.git
           git config user.email "ci@github.com"
           git config user.name "GitHub Actions"
 
-          # ✅ Chemin dynamique selon l'app
-          VALUES_PATH="environments/staging/${{ env.APP_NAME }}/values.yaml"
+          APP_NAME="${{ env.APP_NAME }}"
+          SHA="${{ github.sha }}"
+
+          # ── 1. values.yaml ──────────────────────────────────────
+          VALUES_DIR="environments/staging/${APP_NAME}"
+          VALUES_PATH="${VALUES_DIR}/values.yaml"
+          mkdir -p "${VALUES_DIR}"
 
           if [ ! -f "${VALUES_PATH}" ]; then
-            echo "❌ Fichier introuvable : ${VALUES_PATH}"
-            find . -name "values.yaml"
-            exit 1
+            cat > "${VALUES_PATH}" <<VALEOF
+name: ${APP_NAME}
+replicaCount: 1
+image:
+  repository: "192.168.1.239:8085/selfkhaoula/${APP_NAME}"
+  tag: "${SHA}"
+  pullPolicy: IfNotPresent
+imagePullSecrets:
+  - name: nexus-registry-secret
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 80
+ingress:
+  enabled: true
+  className: nginx
+  host: ${APP_NAME}.staging.local
+  path: /
+  pathType: Prefix
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+env: []
+VALEOF
+          else
+            sed -i "s|repository:.*|repository: \"192.168.1.239:8085/selfkhaoula/${APP_NAME}\"|" "${VALUES_PATH}"
+            sed -i "s|tag:.*|tag: \"${SHA}\"|" "${VALUES_PATH}"
           fi
 
-          # ✅ Met à jour repository ET tag
-          sed -i "s|repository:.*|repository: \"192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}\"|" \
-            "${VALUES_PATH}"
-          sed -i "s|tag:.*|tag: \"${{ github.sha }}\"|" \
-            "${VALUES_PATH}"
+          # ── 2. ArgoCD Application yaml ───────────────────────────
+          ARGOCD_PATH="argocd-applications/${APP_NAME}.yaml"
 
+          if [ ! -f "${ARGOCD_PATH}" ]; then
+            cat > "${ARGOCD_PATH}" <<ARGOEOF
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ${APP_NAME}
+  namespace: argocd
+spec:
+  project: stagiaires
+  source:
+    repoURL: https://github.com/khaoulahamza/devops-templates
+    targetRevision: main
+    path: helm-charts/app-generic
+    helm:
+      valueFiles:
+        - https://raw.githubusercontent.com/khaoulahamza/gitops-environments/main/environments/staging/${APP_NAME}/values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: staging-${APP_NAME}
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+ARGOEOF
+          fi
+
+          # ── 3. Commit & push ─────────────────────────────────────
           git add .
-          git commit -m "[${{ env.APP_NAME }}] image → ${{ github.sha }}" \
-            || echo "Aucun changement"
-
-          git push \
-            https://x-access-token:${GITOPS_PAT}@github.com/khaoulahamza/gitops-environments.git \
-            main
+          git diff --cached --quiet || git commit -m "[${APP_NAME}] deploy → ${SHA}"
+          git push https://x-access-token:${GITOPS_PAT}@github.com/khaoulahamza/gitops-environments.git main

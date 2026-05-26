@@ -39,7 +39,8 @@ jobs:
 
       - name: Push image
         run: |
-          docker push 192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}:${{ github.sha }}
+          docker push \
+            192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}:${{ github.sha }}
 
       - name: Update GitOps repo
         env:
@@ -59,67 +60,70 @@ jobs:
           mkdir -p "${VALUES_DIR}"
 
           if [ ! -f "${VALUES_PATH}" ]; then
-            printf 'name: %s\n' "${APP_NAME}"                                                    > "${VALUES_PATH}"
-            printf 'replicaCount: 1\n'                                                          >> "${VALUES_PATH}"
-            printf 'image:\n'                                                                    >> "${VALUES_PATH}"
-            printf '  repository: "192.168.1.239:8085/selfkhaoula/%s"\n' "${APP_NAME}"          >> "${VALUES_PATH}"
-            printf '  tag: "%s"\n' "${SHA}"                                                      >> "${VALUES_PATH}"
-            printf '  pullPolicy: IfNotPresent\n'                                               >> "${VALUES_PATH}"
-            printf 'imagePullSecrets:\n'                                                         >> "${VALUES_PATH}"
-            printf '  - name: nexus-registry-secret\n'                                          >> "${VALUES_PATH}"
-            printf 'service:\n'                                                                  >> "${VALUES_PATH}"
-            printf '  type: ClusterIP\n'                                                         >> "${VALUES_PATH}"
-            printf '  port: 80\n'                                                                >> "${VALUES_PATH}"
-            printf '  targetPort: 80\n'                                                          >> "${VALUES_PATH}"
-            printf 'ingress:\n'                                                                  >> "${VALUES_PATH}"
-            printf '  enabled: true\n'                                                           >> "${VALUES_PATH}"
-            printf '  className: nginx\n'                                                        >> "${VALUES_PATH}"
-            printf '  host: %s.staging.local\n' "${APP_NAME}"                                   >> "${VALUES_PATH}"
-            printf '  path: /\n'                                                                 >> "${VALUES_PATH}"
-            printf '  pathType: Prefix\n'                                                        >> "${VALUES_PATH}"
-            printf 'resources:\n'                                                                >> "${VALUES_PATH}"
-            printf '  limits:\n'                                                                 >> "${VALUES_PATH}"
-            printf '    cpu: 500m\n'                                                             >> "${VALUES_PATH}"
-            printf '    memory: 512Mi\n'                                                         >> "${VALUES_PATH}"
-            printf '  requests:\n'                                                               >> "${VALUES_PATH}"
-            printf '    cpu: 250m\n'                                                             >> "${VALUES_PATH}"
-            printf '    memory: 256Mi\n'                                                         >> "${VALUES_PATH}"
-            printf 'env: []\n'                                                                   >> "${VALUES_PATH}"
+            printf 'name: %s\n'                                                        "${APP_NAME}"  > "${VALUES_PATH}"
+            printf 'replicaCount: 1\n'                                                              >> "${VALUES_PATH}"
+            printf 'image:\n'                                                                        >> "${VALUES_PATH}"
+            printf '  repository: "192.168.1.239:8085/selfkhaoula/%s"\n'               "${APP_NAME}" >> "${VALUES_PATH}"
+            printf '  tag: "%s"\n'                                                      "${SHA}"      >> "${VALUES_PATH}"
+            printf '  pullPolicy: IfNotPresent\n'                                                    >> "${VALUES_PATH}"
+            printf 'imagePullSecrets:\n'                                                             >> "${VALUES_PATH}"
+            printf '  - name: nexus-registry-secret\n'                                              >> "${VALUES_PATH}"
+            printf 'service:\n'                                                                      >> "${VALUES_PATH}"
+            printf '  type: ClusterIP\n'                                                             >> "${VALUES_PATH}"
+            printf '  port: 80\n'                                                                    >> "${VALUES_PATH}"
+            printf '  targetPort: 80\n'                                                              >> "${VALUES_PATH}"
+            printf 'ingress:\n'                                                                      >> "${VALUES_PATH}"
+            printf '  enabled: true\n'                                                               >> "${VALUES_PATH}"
+            printf '  className: nginx\n'                                                            >> "${VALUES_PATH}"
+            printf '  host: %s.staging.local\n'                                        "${APP_NAME}" >> "${VALUES_PATH}"
+            printf '  path: /\n'                                                                     >> "${VALUES_PATH}"
+            printf '  pathType: Prefix\n'                                                            >> "${VALUES_PATH}"
+            printf 'resources:\n'                                                                    >> "${VALUES_PATH}"
+            printf '  limits:\n'                                                                     >> "${VALUES_PATH}"
+            printf '    cpu: 500m\n'                                                                 >> "${VALUES_PATH}"
+            printf '    memory: 512Mi\n'                                                             >> "${VALUES_PATH}"
+            printf '  requests:\n'                                                                   >> "${VALUES_PATH}"
+            printf '    cpu: 250m\n'                                                                 >> "${VALUES_PATH}"
+            printf '    memory: 256Mi\n'                                                             >> "${VALUES_PATH}"
+            printf 'env: []\n'                                                                       >> "${VALUES_PATH}"
           else
             sed -i "s|repository:.*|repository: \"192.168.1.239:8085/selfkhaoula/${APP_NAME}\"|" "${VALUES_PATH}"
-            sed -i "s|tag:.*|tag: \"${SHA}\"|" "${VALUES_PATH}"
+            sed -i "s|tag:.*|tag: \"${SHA}\"|"                                                   "${VALUES_PATH}"
           fi
 
-          # ── 2. ArgoCD Application yaml ───────────────────────────
+          # ── 2. ArgoCD Application (multi-source) ─────────────────
           ARGOCD_PATH="argocd-applications/${APP_NAME}.yaml"
 
           if [ ! -f "${ARGOCD_PATH}" ]; then
-            printf 'apiVersion: argoproj.io/v1alpha1\n'                                         > "${ARGOCD_PATH}"
-            printf 'kind: Application\n'                                                         >> "${ARGOCD_PATH}"
-            printf 'metadata:\n'                                                                 >> "${ARGOCD_PATH}"
-            printf '  name: %s\n' "${APP_NAME}"                                                  >> "${ARGOCD_PATH}"
-            printf '  namespace: argocd\n'                                                       >> "${ARGOCD_PATH}"
-            printf 'spec:\n'                                                                     >> "${ARGOCD_PATH}"
-            printf '  project: stagiaires\n'                                                     >> "${ARGOCD_PATH}"
-            printf '  source:\n'                                                                 >> "${ARGOCD_PATH}"
-            printf '    repoURL: https://github.com/khaoulahamza/devops-templates\n'            >> "${ARGOCD_PATH}"
-            printf '    targetRevision: main\n'                                                  >> "${ARGOCD_PATH}"
-            printf '    path: helm-charts/app-generic\n'                                         >> "${ARGOCD_PATH}"
-            printf '    helm:\n'                                                                  >> "${ARGOCD_PATH}"
-            printf '      valueFiles:\n'                                                         >> "${ARGOCD_PATH}"
-            printf '        - https://raw.githubusercontent.com/khaoulahamza/gitops-environments/main/environments/staging/%s/values.yaml\n' "${APP_NAME}" >> "${ARGOCD_PATH}"
-            printf '  destination:\n'                                                            >> "${ARGOCD_PATH}"
-            printf '    server: https://kubernetes.default.svc\n'                               >> "${ARGOCD_PATH}"
-            printf '    namespace: staging-%s\n' "${APP_NAME}"                                   >> "${ARGOCD_PATH}"
-            printf '  syncPolicy:\n'                                                             >> "${ARGOCD_PATH}"
-            printf '    automated:\n'                                                            >> "${ARGOCD_PATH}"
-            printf '      prune: true\n'                                                         >> "${ARGOCD_PATH}"
-            printf '      selfHeal: true\n'                                                      >> "${ARGOCD_PATH}"
-            printf '    syncOptions:\n'                                                          >> "${ARGOCD_PATH}"
-            printf '      - CreateNamespace=true\n'                                              >> "${ARGOCD_PATH}"
+            printf 'apiVersion: argoproj.io/v1alpha1\n'                                             > "${ARGOCD_PATH}"
+            printf 'kind: Application\n'                                                            >> "${ARGOCD_PATH}"
+            printf 'metadata:\n'                                                                    >> "${ARGOCD_PATH}"
+            printf '  name: %s\n'                                          "${APP_NAME}"            >> "${ARGOCD_PATH}"
+            printf '  namespace: argocd\n'                                                          >> "${ARGOCD_PATH}"
+            printf 'spec:\n'                                                                        >> "${ARGOCD_PATH}"
+            printf '  project: stagiaires\n'                                                        >> "${ARGOCD_PATH}"
+            printf '  sources:\n'                                                                   >> "${ARGOCD_PATH}"
+            printf '    - repoURL: https://github.com/khaoulahamza/devops-templates\n'             >> "${ARGOCD_PATH}"
+            printf '      targetRevision: main\n'                                                   >> "${ARGOCD_PATH}"
+            printf '      path: helm-charts/app-generic\n'                                          >> "${ARGOCD_PATH}"
+            printf '      helm:\n'                                                                  >> "${ARGOCD_PATH}"
+            printf '        valueFiles:\n'                                                          >> "${ARGOCD_PATH}"
+            printf '          - $values/environments/staging/%s/values.yaml\n' "${APP_NAME}"       >> "${ARGOCD_PATH}"
+            printf '    - repoURL: https://github.com/khaoulahamza/gitops-environments\n'          >> "${ARGOCD_PATH}"
+            printf '      targetRevision: main\n'                                                   >> "${ARGOCD_PATH}"
+            printf '      ref: values\n'                                                            >> "${ARGOCD_PATH}"
+            printf '  destination:\n'                                                               >> "${ARGOCD_PATH}"
+            printf '    server: https://kubernetes.default.svc\n'                                   >> "${ARGOCD_PATH}"
+            printf '    namespace: staging-%s\n'                           "${APP_NAME}"            >> "${ARGOCD_PATH}"
+            printf '  syncPolicy:\n'                                                                >> "${ARGOCD_PATH}"
+            printf '    automated:\n'                                                               >> "${ARGOCD_PATH}"
+            printf '      prune: true\n'                                                            >> "${ARGOCD_PATH}"
+            printf '      selfHeal: true\n'                                                         >> "${ARGOCD_PATH}"
+            printf '    syncOptions:\n'                                                             >> "${ARGOCD_PATH}"
+            printf '      - CreateNamespace=true\n'                                                 >> "${ARGOCD_PATH}"
           fi
 
-          # ── 3. Commit & push ─────────────────────────────────────
+          # ── 3. Commit & push ──────────────────────────────────────
           git add .
           git diff --cached --quiet || git commit -m "[${APP_NAME}] deploy -> ${SHA}"
           git push https://x-access-token:${GITOPS_PAT}@github.com/khaoulahamza/gitops-environments.git main

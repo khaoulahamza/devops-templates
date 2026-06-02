@@ -141,7 +141,6 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
       # ── 3. Tests unitaires ───────────────────────────────────────
-      # Frontend Node.js (soit à la racine, soit dans frontend/)
       - name: Test frontend (Node.js)
         if: env.HAS_FRONT == 'true' && (hashFiles('package.json') != '' || hashFiles('frontend/package.json') != '')
         run: |
@@ -155,14 +154,12 @@ jobs:
             npm test
           fi
 
-      # Backend Java / Maven
       - name: Test backend (Java / Maven)
         if: hashFiles('backend/pom.xml') != ''
         run: |
           echo "▶ Tests Maven backend"
           cd backend && mvn test
 
-      # Backend Python
       - name: Test backend (Python / pytest)
         if: hashFiles('backend/requirements.txt') != ''
         run: |
@@ -171,7 +168,6 @@ jobs:
           pip install -r requirements.txt
           pytest
 
-      # Backend Go
       - name: Test backend (Go)
         if: hashFiles('backend/go.mod') != ''
         run: |

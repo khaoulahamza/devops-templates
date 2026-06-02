@@ -80,6 +80,9 @@ jobs:
             curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
             sudo apt-get install -y nodejs
           fi
+          NODE_BIN=$(dirname "$(which node 2>/dev/null || echo '/usr/bin/node')")
+          echo "${NODE_BIN}" >> "$GITHUB_PATH"
+          export PATH="${NODE_BIN}:${PATH}"
           echo "Node: $(node -v) | npm: $(npm -v)"
 
       - name: Test frontend (Node.js)

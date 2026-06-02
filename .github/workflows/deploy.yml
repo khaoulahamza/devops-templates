@@ -1,7 +1,3 @@
-# ============================================================
-#  Deploy Template — Reusable workflow (workflow_call)
-# ============================================================
-
 name: Deploy Template
 
 on:
@@ -16,22 +12,16 @@ jobs:
 
     steps:
 
-      # ── 0. Checkout ──────────────────────────────────────────────
       - name: Checkout application repo
         uses: actions/checkout@v4
 
-      # ── 1. Normalise APP_NAME ────────────────────────────────────
       - name: Set APP_NAME
         run: |
-          APP_NAME=$(echo "${{ github.event.repository.name }}" \
-            | tr '[:upper:]' '[:lower:]' \
-            | sed 's/[^a-z0-9-]/-/g')
+          APP_NAME=$(echo "${{ github.event.repository.name }}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g')
           echo "APP_NAME=${APP_NAME}" >> "$GITHUB_ENV"
 
-      # ── 2. Détection du mode et emplacement frontend ─────────────
       - name: Detect deploy mode & frontend location
         run: |
-          DEPLOY_MODE=""
           HAS_FRONT="false"
           HAS_BACK="false"
           FRONT_FILE=""
@@ -42,53 +32,35 @@ jobs:
           FRONT_AT_ROOT="false"
 
           if [ -f "frontend/Dockerfile" ]; then
-            HAS_FRONT="true"
-            FRONT_FILE="frontend/Dockerfile"
-            FRONT_CONTEXT="frontend"
-            echo "-> frontend Dockerfile : frontend/Dockerfile"
+            HAS_FRONT="true"; FRONT_FILE="frontend/Dockerfile"; FRONT_CONTEXT="frontend"
           elif [ -f "Dockerfile.frontend" ]; then
-            HAS_FRONT="true"
-            FRONT_FILE="Dockerfile.frontend"
-            FRONT_CONTEXT="."
-            echo "-> frontend Dockerfile : Dockerfile.frontend"
+            HAS_FRONT="true"; FRONT_FILE="Dockerfile.frontend"; FRONT_CONTEXT="."
           fi
 
           if [ "${HAS_FRONT}" = "true" ]; then
             if [ -f "package.json" ] && [ -f "angular.json" ]; then
               FRONT_AT_ROOT="true"
-              echo "-> Frontend a la racine (package.json + angular.json)"
             elif [ -f "frontend/package.json" ]; then
               FRONT_AT_ROOT="false"
-              echo "-> Frontend dans dossier frontend/"
-            else
-              echo "Aucun package.json trouve pour le frontend"
             fi
           fi
 
           if [ -f "backend/Dockerfile" ]; then
-            HAS_BACK="true"
-            BACK_FILE="backend/Dockerfile"
-            BACK_CONTEXT="backend"
-            echo "-> backend Dockerfile : backend/Dockerfile"
+            HAS_BACK="true"; BACK_FILE="backend/Dockerfile"; BACK_CONTEXT="backend"
           elif [ -f "Dockerfile.backend" ]; then
-            HAS_BACK="true"
-            BACK_FILE="Dockerfile.backend"
-            BACK_CONTEXT="."
-            echo "-> backend Dockerfile : Dockerfile.backend"
+            HAS_BACK="true"; BACK_FILE="Dockerfile.backend"; BACK_CONTEXT="."
           fi
 
           if [ "${HAS_FRONT}" = "true" ] && [ "${HAS_BACK}" = "true" ]; then
             DEPLOY_MODE="dual"
-          elif [ "${HAS_FRONT}" = "true" ] && [ "${HAS_BACK}" = "false" ]; then
+          elif [ "${HAS_FRONT}" = "true" ]; then
             DEPLOY_MODE="front-only"
-          elif [ "${HAS_BACK}" = "true" ] && [ "${HAS_FRONT}" = "false" ]; then
+          elif [ "${HAS_BACK}" = "true" ]; then
             DEPLOY_MODE="back-only"
           elif [ -f "Dockerfile" ]; then
-            DEPLOY_MODE="mono"
-            MONO_FILE="Dockerfile"
+            DEPLOY_MODE="mono"; MONO_FILE="Dockerfile"
           else
-            echo "ERREUR : aucun Dockerfile trouve."
-            exit 1
+            echo "ERREUR : aucun Dockerfile trouve."; exit 1
           fi
 
           echo "DEPLOY_MODE=${DEPLOY_MODE}"     >> "$GITHUB_ENV"
@@ -101,127 +73,79 @@ jobs:
           echo "MONO_FILE=${MONO_FILE}"         >> "$GITHUB_ENV"
           echo "FRONT_AT_ROOT=${FRONT_AT_ROOT}" >> "$GITHUB_ENV"
 
-          echo "DEPLOY_MODE    = ${DEPLOY_MODE}"
-          echo "FRONT_AT_ROOT  = ${FRONT_AT_ROOT}"
-          echo "FRONT_FILE     = ${FRONT_FILE}"
-          echo "BACK_FILE      = ${BACK_FILE}"
-
-      # ── 3. Tests unitaires ───────────────────────────────────────
       - name: Test frontend (Node.js)
         if: >
           env.HAS_FRONT == 'true' &&
           (hashFiles('package.json') != '' || hashFiles('frontend/package.json') != '')
         run: |
-          echo "Tests Node.js frontend"
           if [ "${{ env.FRONT_AT_ROOT }}" = "true" ]; then
-            npm install
-            npm test
+            npm install && npm test
           else
-            cd frontend
-            npm install
-            npm test
+            cd frontend && npm install && npm test
           fi
 
       - name: Test backend (Java / Maven)
         if: hashFiles('backend/pom.xml') != ''
-        run: |
-          echo "Tests Maven backend"
-          cd backend && mvn test
+        run: cd backend && mvn test
 
       - name: Test backend (Python / pytest)
         if: hashFiles('backend/requirements.txt') != ''
         run: |
-          echo "Tests pytest backend"
           cd backend
           pip install -r requirements.txt
           pytest
 
       - name: Test backend (Go)
         if: hashFiles('backend/go.mod') != ''
-        run: |
-          echo "Tests Go backend"
-          cd backend && go test ./...
+        run: cd backend && go test ./...
 
-      # ── 4. Lint frontend (Angular / ESLint) ──────────────────────
       - name: Lint frontend (Angular / ESLint)
         if: >
           env.HAS_FRONT == 'true' &&
           (hashFiles('package.json') != '' || hashFiles('frontend/package.json') != '')
         run: |
-          echo "Verification du script lint"
           if [ "${{ env.FRONT_AT_ROOT }}" = "true" ]; then
-            if node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts.lint ? 0 : 1);" 2>/dev/null; then
+            if node -e "const p=require('./package.json'); process.exit(p.scripts&&p.scripts.lint?0:1);" 2>/dev/null; then
               npm run lint
-            else
-              echo "Aucun script lint dans package.json"
             fi
           else
             cd frontend
-            if node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts.lint ? 0 : 1);" 2>/dev/null; then
+            if node -e "const p=require('./package.json'); process.exit(p.scripts&&p.scripts.lint?0:1);" 2>/dev/null; then
               npm run lint
-            else
-              echo "Aucun script lint dans frontend/package.json"
             fi
           fi
 
-      # ── 5. Lint backend (Checkstyle) ─────────────────────────────
       - name: Lint backend (Spring Boot / Checkstyle)
         if: hashFiles('backend/pom.xml') != ''
         run: |
-          echo "Verification de maven-checkstyle-plugin"
           if grep -qi "checkstyle" backend/pom.xml; then
             cd backend && mvn checkstyle:check
-          else
-            echo "Checkstyle non configure"
           fi
 
-      # ── 6. Lint Dockerfiles (hadolint) ───────────────────────────
       - name: Lint Dockerfiles (hadolint)
         run: |
           lint_dockerfile() {
             local FILE="$1"
-            if [ -z "${FILE}" ] || [ ! -f "${FILE}" ]; then
-              echo "Dockerfile absent : ${FILE}"
-              return 0
-            fi
-            echo "hadolint -> ${FILE}"
+            [ -z "${FILE}" ] || [ ! -f "${FILE}" ] && return 0
             docker run --rm -i hadolint/hadolint < "${FILE}"
-            echo "OK ${FILE}"
           }
-
           case "${{ env.DEPLOY_MODE }}" in
-            dual)
-              lint_dockerfile "${{ env.FRONT_FILE }}"
-              lint_dockerfile "${{ env.BACK_FILE }}"
-              ;;
-            front-only)
-              lint_dockerfile "${{ env.FRONT_FILE }}"
-              ;;
-            back-only)
-              lint_dockerfile "${{ env.BACK_FILE }}"
-              ;;
-            mono)
-              lint_dockerfile "${{ env.MONO_FILE }}"
-              ;;
+            dual)       lint_dockerfile "${{ env.FRONT_FILE }}"; lint_dockerfile "${{ env.BACK_FILE }}" ;;
+            front-only) lint_dockerfile "${{ env.FRONT_FILE }}" ;;
+            back-only)  lint_dockerfile "${{ env.BACK_FILE }}" ;;
+            mono)       lint_dockerfile "${{ env.MONO_FILE }}" ;;
           esac
 
-      # ── 7. Trust Nexus certificate ───────────────────────────────
       - name: Trust Nexus certificate
         run: |
           sudo mkdir -p /etc/docker/certs.d/192.168.1.239:8085
-          sudo cp /home/ubuntu/nexus/certs/nexus.crt \
-            /etc/docker/certs.d/192.168.1.239:8085/ca.crt
-          sudo cp /home/ubuntu/nexus/certs/nexus.crt \
-            /usr/local/share/ca-certificates/nexus.crt
+          sudo cp /home/ubuntu/nexus/certs/nexus.crt /etc/docker/certs.d/192.168.1.239:8085/ca.crt
+          sudo cp /home/ubuntu/nexus/certs/nexus.crt /usr/local/share/ca-certificates/nexus.crt
           sudo update-ca-certificates
 
-      # ── 8. Docker login ──────────────────────────────────────────
       - name: Docker login to Nexus registry
-        run: |
-          echo "nexus111" | docker login 192.168.1.239:8085 \
-            -u admin --password-stdin
+        run: echo "nexus111" | docker login 192.168.1.239:8085 -u admin --password-stdin
 
-      # ── 9. Build & push image(s) ─────────────────────────────────
       - name: Build & push image (mono)
         if: env.DEPLOY_MODE == 'mono'
         run: |
@@ -257,7 +181,6 @@ jobs:
           docker build -f "${{ env.BACK_FILE }}" -t "${IMAGE}" "${{ env.BACK_CONTEXT }}"
           docker push "${IMAGE}"
 
-      # ── 10. Update GitOps repo ───────────────────────────────────
       - name: Update GitOps repo
         env:
           GITOPS_PAT: ${{ secrets.GITOPS_TOKEN }}
@@ -273,41 +196,13 @@ jobs:
           git config user.name "GitHub Actions"
 
           write_values() {
-            local COMP="$1"
-            local REPO="$2"
-            local TAG="$3"
+            local COMP="$1" REPO="$2" TAG="$3"
             local DIR="environments/staging/${COMP}"
             local VPATH="${DIR}/values.yaml"
             mkdir -p "${DIR}"
             if [ ! -f "${VPATH}" ]; then
-              cat > "${VPATH}" <<EOF
-name: ${COMP}
-replicaCount: 1
-image:
-  repository: "${REPO}"
-  tag: "${TAG}"
-  pullPolicy: IfNotPresent
-imagePullSecrets:
-  - name: nexus-registry-secret
-service:
-  type: ClusterIP
-  port: 80
-  targetPort: 80
-ingress:
-  enabled: true
-  className: nginx
-  host: ${COMP}.staging.local
-  path: /
-  pathType: Prefix
-resources:
-  limits:
-    cpu: 500m
-    memory: 512Mi
-  requests:
-    cpu: 250m
-    memory: 256Mi
-env: []
-EOF
+              printf 'name: %s\nreplicaCount: 1\nimage:\n  repository: "%s"\n  tag: "%s"\n  pullPolicy: IfNotPresent\nimagePullSecrets:\n  - name: nexus-registry-secret\nservice:\n  type: ClusterIP\n  port: 80\n  targetPort: 80\ningress:\n  enabled: true\n  className: nginx\n  host: %s.staging.local\n  path: /\n  pathType: Prefix\nresources:\n  limits:\n    cpu: 500m\n    memory: 512Mi\n  requests:\n    cpu: 250m\n    memory: 256Mi\nenv: []\n' \
+                "${COMP}" "${REPO}" "${TAG}" "${COMP}" > "${VPATH}"
             else
               sed -i "s|repository:.*|repository: \"${REPO}\"|" "${VPATH}"
               sed -i "s|tag:.*|tag: \"${TAG}\"|" "${VPATH}"
@@ -319,39 +214,12 @@ EOF
             local APATH="argocd-applications/${COMP}.yaml"
             mkdir -p argocd-applications
             if [ ! -f "${APATH}" ]; then
-              cat > "${APATH}" <<EOF
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: ${COMP}
-  namespace: argocd
-spec:
-  project: stagiaires
-  sources:
-    - repoURL: https://github.com/khaoulahamza/devops-templates
-      targetRevision: main
-      path: helm-charts/app-generic
-      helm:
-        valueFiles:
-          - \$values/environments/staging/${COMP}/values.yaml
-    - repoURL: https://github.com/khaoulahamza/gitops-environments
-      targetRevision: main
-      ref: values
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: staging-${COMP}
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-    syncOptions:
-      - CreateNamespace=true
-EOF
+              printf 'apiVersion: argoproj.io/v1alpha1\nkind: Application\nmetadata:\n  name: %s\n  namespace: argocd\nspec:\n  project: stagiaires\n  sources:\n    - repoURL: https://github.com/khaoulahamza/devops-templates\n      targetRevision: main\n      path: helm-charts/app-generic\n      helm:\n        valueFiles:\n          - $values/environments/staging/%s/values.yaml\n    - repoURL: https://github.com/khaoulahamza/gitops-environments\n      targetRevision: main\n      ref: values\n  destination:\n    server: https://kubernetes.default.svc\n    namespace: staging-%s\n  syncPolicy:\n    automated:\n      prune: true\n      selfHeal: true\n    syncOptions:\n      - CreateNamespace=true\n' \
+                "${COMP}" "${COMP}" "${COMP}" > "${APATH}"
             fi
           }
 
-          MODE="${{ env.DEPLOY_MODE }}"
-          case "${MODE}" in
+          case "${{ env.DEPLOY_MODE }}" in
             mono)
               write_values "${APP_NAME}" "${REGISTRY}/${APP_NAME}" "${SHA}"
               write_argocd "${APP_NAME}"

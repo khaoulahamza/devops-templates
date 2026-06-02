@@ -84,9 +84,9 @@ jobs:
           (hashFiles('package.json') != '' || hashFiles('frontend/package.json') != '')
         run: |
           if [ "${{ env.FRONT_AT_ROOT }}" = "true" ]; then
-            npm install && npm test
+            npm install --legacy-peer-deps && npm test
           else
-            cd frontend && npm install && npm test
+            cd frontend && npm install --legacy-peer-deps && npm test
           fi
 
       - name: Test backend (Java / Maven)
@@ -110,11 +110,13 @@ jobs:
           (hashFiles('package.json') != '' || hashFiles('frontend/package.json') != '')
         run: |
           if [ "${{ env.FRONT_AT_ROOT }}" = "true" ]; then
+            npm install --legacy-peer-deps
             if node -e "const p=require('./package.json'); process.exit(p.scripts&&p.scripts.lint?0:1);" 2>/dev/null; then
               npm run lint
             fi
           else
             cd frontend
+            npm install --legacy-peer-deps
             if node -e "const p=require('./package.json'); process.exit(p.scripts&&p.scripts.lint?0:1);" 2>/dev/null; then
               npm run lint
             fi

@@ -1,33 +1,5 @@
 # ============================================================
 #  Deploy Template — Reusable workflow (workflow_call)
-#
-#  Modes détectés automatiquement :
-#    • front-only : Dockerfile frontend uniquement
-#    • back-only  : Dockerfile backend uniquement
-#    • dual       : Dockerfile frontend + backend
-#    • mono       : Dockerfile unique à la racine (compat.)
-#
-#  Dockerfiles reconnus :
-#    Frontend : frontend/Dockerfile  ou  Dockerfile.frontend
-#    Backend  : backend/Dockerfile   ou  Dockerfile.backend
-#    Mono     : Dockerfile (racine)
-#
-#  Supports deux structures pour le frontend :
-#    - Frontend à la racine (angular.json, package.json, src/)
-#    - Frontend dans dossier frontend/
-#
-#  Pipeline :
-#    0. Checkout
-#    1. Normalise APP_NAME
-#    2. Détection du mode + emplacement frontend
-#    3. Tests unitaires (Node.js / Maven / pytest / Go)
-#    4. Lint frontend (Angular ESLint — non-bloquant)
-#    5. Lint backend (Checkstyle — non-bloquant)
-#    6. Lint Dockerfiles (hadolint — bloquant)
-#    7. Trust Nexus certificate
-#    8. Docker login
-#    9. Build & push image(s)
-#   10. Update GitOps repo
 # ============================================================
 
 name: Deploy Template
@@ -69,46 +41,42 @@ jobs:
           MONO_FILE=""
           FRONT_AT_ROOT="false"
 
-          # --- Détection frontend ---
           if [ -f "frontend/Dockerfile" ]; then
             HAS_FRONT="true"
             FRONT_FILE="frontend/Dockerfile"
             FRONT_CONTEXT="frontend"
-            echo "→ frontend Dockerfile : frontend/Dockerfile"
+            echo "-> frontend Dockerfile : frontend/Dockerfile"
           elif [ -f "Dockerfile.frontend" ]; then
             HAS_FRONT="true"
             FRONT_FILE="Dockerfile.frontend"
             FRONT_CONTEXT="."
-            echo "→ frontend Dockerfile : Dockerfile.frontend"
+            echo "-> frontend Dockerfile : Dockerfile.frontend"
           fi
 
-          # Si frontend détecté, vérifier où se trouve package.json
           if [ "${HAS_FRONT}" = "true" ]; then
             if [ -f "package.json" ] && [ -f "angular.json" ]; then
               FRONT_AT_ROOT="true"
-              echo "→ Frontend à la racine (package.json + angular.json)"
+              echo "-> Frontend a la racine (package.json + angular.json)"
             elif [ -f "frontend/package.json" ]; then
               FRONT_AT_ROOT="false"
-              echo "→ Frontend dans dossier frontend/"
+              echo "-> Frontend dans dossier frontend/"
             else
-              echo "⚠ Aucun package.json trouvé pour le frontend (lint/tests ignorés)"
+              echo "Aucun package.json trouve pour le frontend"
             fi
           fi
 
-          # --- Détection backend ---
           if [ -f "backend/Dockerfile" ]; then
             HAS_BACK="true"
             BACK_FILE="backend/Dockerfile"
             BACK_CONTEXT="backend"
-            echo "→ backend Dockerfile : backend/Dockerfile"
+            echo "-> backend Dockerfile : backend/Dockerfile"
           elif [ -f "Dockerfile.backend" ]; then
             HAS_BACK="true"
             BACK_FILE="Dockerfile.backend"
             BACK_CONTEXT="."
-            echo "→ backend Dockerfile : Dockerfile.backend"
+            echo "-> backend Dockerfile : Dockerfile.backend"
           fi
 
-          # --- Choix du mode ---
           if [ "${HAS_FRONT}" = "true" ] && [ "${HAS_BACK}" = "true" ]; then
             DEPLOY_MODE="dual"
           elif [ "${HAS_FRONT}" = "true" ] && [ "${HAS_BACK}" = "false" ]; then
@@ -119,32 +87,32 @@ jobs:
             DEPLOY_MODE="mono"
             MONO_FILE="Dockerfile"
           else
-            echo "❌ ERREUR : aucun Dockerfile trouvé."
+            echo "ERREUR : aucun Dockerfile trouve."
             exit 1
           fi
 
-          echo "DEPLOY_MODE=${DEPLOY_MODE}"           >> "$GITHUB_ENV"
-          echo "HAS_FRONT=${HAS_FRONT}"               >> "$GITHUB_ENV"
-          echo "HAS_BACK=${HAS_BACK}"                 >> "$GITHUB_ENV"
-          echo "FRONT_FILE=${FRONT_FILE}"             >> "$GITHUB_ENV"
-          echo "FRONT_CONTEXT=${FRONT_CONTEXT}"       >> "$GITHUB_ENV"
-          echo "BACK_FILE=${BACK_FILE}"               >> "$GITHUB_ENV"
-          echo "BACK_CONTEXT=${BACK_CONTEXT}"         >> "$GITHUB_ENV"
-          echo "MONO_FILE=${MONO_FILE}"               >> "$GITHUB_ENV"
-          echo "FRONT_AT_ROOT=${FRONT_AT_ROOT}"       >> "$GITHUB_ENV"
+          echo "DEPLOY_MODE=${DEPLOY_MODE}"     >> "$GITHUB_ENV"
+          echo "HAS_FRONT=${HAS_FRONT}"         >> "$GITHUB_ENV"
+          echo "HAS_BACK=${HAS_BACK}"           >> "$GITHUB_ENV"
+          echo "FRONT_FILE=${FRONT_FILE}"       >> "$GITHUB_ENV"
+          echo "FRONT_CONTEXT=${FRONT_CONTEXT}" >> "$GITHUB_ENV"
+          echo "BACK_FILE=${BACK_FILE}"         >> "$GITHUB_ENV"
+          echo "BACK_CONTEXT=${BACK_CONTEXT}"   >> "$GITHUB_ENV"
+          echo "MONO_FILE=${MONO_FILE}"         >> "$GITHUB_ENV"
+          echo "FRONT_AT_ROOT=${FRONT_AT_ROOT}" >> "$GITHUB_ENV"
 
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "  DEPLOY_MODE        = ${DEPLOY_MODE}"
-          echo "  FRONT_AT_ROOT      = ${FRONT_AT_ROOT}"
-          echo "  FRONT_FILE         = ${FRONT_FILE}"
-          echo "  BACK_FILE          = ${BACK_FILE}"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "DEPLOY_MODE    = ${DEPLOY_MODE}"
+          echo "FRONT_AT_ROOT  = ${FRONT_AT_ROOT}"
+          echo "FRONT_FILE     = ${FRONT_FILE}"
+          echo "BACK_FILE      = ${BACK_FILE}"
 
       # ── 3. Tests unitaires ───────────────────────────────────────
       - name: Test frontend (Node.js)
-        if: env.HAS_FRONT == 'true' && (hashFiles('package.json') != '' || hashFiles('frontend/package.json') != '')
+        if: >
+          env.HAS_FRONT == 'true' &&
+          (hashFiles('package.json') != '' || hashFiles('frontend/package.json') != '')
         run: |
-          echo "▶ Tests Node.js frontend"
+          echo "Tests Node.js frontend"
           if [ "${{ env.FRONT_AT_ROOT }}" = "true" ]; then
             npm install
             npm test
@@ -157,13 +125,13 @@ jobs:
       - name: Test backend (Java / Maven)
         if: hashFiles('backend/pom.xml') != ''
         run: |
-          echo "▶ Tests Maven backend"
+          echo "Tests Maven backend"
           cd backend && mvn test
 
       - name: Test backend (Python / pytest)
         if: hashFiles('backend/requirements.txt') != ''
         run: |
-          echo "▶ Tests pytest backend"
+          echo "Tests pytest backend"
           cd backend
           pip install -r requirements.txt
           pytest
@@ -171,28 +139,28 @@ jobs:
       - name: Test backend (Go)
         if: hashFiles('backend/go.mod') != ''
         run: |
-          echo "▶ Tests Go backend"
+          echo "Tests Go backend"
           cd backend && go test ./...
 
       # ── 4. Lint frontend (Angular / ESLint) ──────────────────────
       - name: Lint frontend (Angular / ESLint)
-        if: env.HAS_FRONT == 'true' && (hashFiles('package.json') != '' || hashFiles('frontend/package.json') != '')
+        if: >
+          env.HAS_FRONT == 'true' &&
+          (hashFiles('package.json') != '' || hashFiles('frontend/package.json') != '')
         run: |
-          echo "▶ Vérification du script lint"
+          echo "Verification du script lint"
           if [ "${{ env.FRONT_AT_ROOT }}" = "true" ]; then
             if node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts.lint ? 0 : 1);" 2>/dev/null; then
-              echo "✔ script lint trouvé — npm run lint"
               npm run lint
             else
-              echo "⚠ Aucun script lint dans package.json"
+              echo "Aucun script lint dans package.json"
             fi
           else
             cd frontend
             if node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts.lint ? 0 : 1);" 2>/dev/null; then
-              echo "✔ script lint trouvé — npm run lint"
               npm run lint
             else
-              echo "⚠ Aucun script lint dans frontend/package.json"
+              echo "Aucun script lint dans frontend/package.json"
             fi
           fi
 
@@ -200,25 +168,25 @@ jobs:
       - name: Lint backend (Spring Boot / Checkstyle)
         if: hashFiles('backend/pom.xml') != ''
         run: |
-          echo "▶ Vérification de maven-checkstyle-plugin"
+          echo "Verification de maven-checkstyle-plugin"
           if grep -qi "checkstyle" backend/pom.xml; then
             cd backend && mvn checkstyle:check
           else
-            echo "⚠ Checkstyle non configuré"
+            echo "Checkstyle non configure"
           fi
 
-      # ── 6. Lint Dockerfiles (hadolint) ──────────────────────────
+      # ── 6. Lint Dockerfiles (hadolint) ───────────────────────────
       - name: Lint Dockerfiles (hadolint)
         run: |
           lint_dockerfile() {
             local FILE="$1"
             if [ -z "${FILE}" ] || [ ! -f "${FILE}" ]; then
-              echo "⚠ Dockerfile absent : ${FILE}"
+              echo "Dockerfile absent : ${FILE}"
               return 0
             fi
-            echo "▶ hadolint → ${FILE}"
+            echo "hadolint -> ${FILE}"
             docker run --rm -i hadolint/hadolint < "${FILE}"
-            echo "✔ ${FILE}"
+            echo "OK ${FILE}"
           }
 
           case "${{ env.DEPLOY_MODE }}" in
@@ -305,7 +273,9 @@ jobs:
           git config user.name "GitHub Actions"
 
           write_values() {
-            local COMP="$1" REPO="$2" TAG="$3"
+            local COMP="$1"
+            local REPO="$2"
+            local TAG="$3"
             local DIR="environments/staging/${COMP}"
             local VPATH="${DIR}/values.yaml"
             mkdir -p "${DIR}"

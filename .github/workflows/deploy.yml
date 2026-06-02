@@ -1,15 +1,33 @@
 # ============================================================
 #  Deploy Template — Reusable workflow (workflow_call)
-#  Supports:
-#    • mono  : single Dockerfile at root (backward-compatible)
-#    • dual  : Dockerfile.frontend + Dockerfile.backend
-#              OR frontend/Dockerfile + backend/Dockerfile
-#  Steps:
-#    1. Detect repository structure → set DEPLOY_MODE
-#    2. Run language-specific tests (if test files present)
-#    3. Lint — Angular (npm run lint), Spring Boot (Checkstyle), Dockerfiles (hadolint)
-#    4. Build & push Docker image(s) to Nexus
-#    5. Update gitops-environments (values.yaml + ArgoCD Application)
+#
+#  Modes détectés automatiquement :
+#    • front-only : Dockerfile frontend uniquement
+#    • back-only  : Dockerfile backend uniquement
+#    • dual       : Dockerfile frontend + backend
+#    • mono       : Dockerfile unique à la racine (compat.)
+#
+#  Dockerfiles reconnus :
+#    Frontend : frontend/Dockerfile  ou  Dockerfile.frontend
+#    Backend  : backend/Dockerfile   ou  Dockerfile.backend
+#    Mono     : Dockerfile (racine)
+#
+#  Supports deux structures pour le frontend :
+#    - Frontend à la racine (angular.json, package.json, src/)
+#    - Frontend dans dossier frontend/
+#
+#  Pipeline :
+#    0. Checkout
+#    1. Normalise APP_NAME
+#    2. Détection du mode + emplacement frontend
+#    3. Tests unitaires (Node.js / Maven / pytest / Go)
+#    4. Lint frontend (Angular ESLint — non-bloquant)
+#    5. Lint backend (Checkstyle — non-bloquant)
+#    6. Lint Dockerfiles (hadolint — bloquant)
+#    7. Trust Nexus certificate
+#    8. Docker login
+#    9. Build & push image(s)
+#   10. Update GitOps repo
 # ============================================================
 
 name: Deploy Template
@@ -25,6 +43,7 @@ jobs:
     runs-on: self-hosted
 
     steps:
+
       # ── 0. Checkout ──────────────────────────────────────────────
       - name: Checkout application repo
         uses: actions/checkout@v4
@@ -37,152 +56,192 @@ jobs:
             | sed 's/[^a-z0-9-]/-/g')
           echo "APP_NAME=${APP_NAME}" >> "$GITHUB_ENV"
 
-      # ── 2. Detect repository structure ──────────────────────────
-      #  Sets:
-      #    DEPLOY_MODE   = mono | dual
-      #    FRONT_FILE    = path to frontend Dockerfile (dual only)
-      #    FRONT_CONTEXT = build context for frontend  (dual only)
-      #    BACK_FILE     = path to backend  Dockerfile (dual only)
-      #    BACK_CONTEXT  = build context for backend   (dual only)
-      #    MONO_FILE     = path to single Dockerfile   (mono only)
-      - name: Detect structure (mono vs dual)
+      # ── 2. Détection du mode et emplacement frontend ─────────────
+      - name: Detect deploy mode & frontend location
         run: |
-          DEPLOY_MODE="mono"
+          DEPLOY_MODE=""
+          HAS_FRONT="false"
+          HAS_BACK="false"
           FRONT_FILE=""
           FRONT_CONTEXT="."
           BACK_FILE=""
           BACK_CONTEXT="."
-          MONO_FILE="Dockerfile"
+          MONO_FILE=""
+          FRONT_AT_ROOT="false"
 
-          # --- Frontend detection ---
+          # --- Détection frontend ---
           if [ -f "frontend/Dockerfile" ]; then
+            HAS_FRONT="true"
             FRONT_FILE="frontend/Dockerfile"
             FRONT_CONTEXT="frontend"
+            echo "→ frontend Dockerfile : frontend/Dockerfile"
           elif [ -f "Dockerfile.frontend" ]; then
+            HAS_FRONT="true"
             FRONT_FILE="Dockerfile.frontend"
             FRONT_CONTEXT="."
+            echo "→ frontend Dockerfile : Dockerfile.frontend"
           fi
 
-          # --- Backend detection ---
+          # Si frontend détecté, vérifier où se trouve package.json
+          if [ "${HAS_FRONT}" = "true" ]; then
+            if [ -f "package.json" ] && [ -f "angular.json" ]; then
+              FRONT_AT_ROOT="true"
+              echo "→ Frontend à la racine (package.json + angular.json)"
+            elif [ -f "frontend/package.json" ]; then
+              FRONT_AT_ROOT="false"
+              echo "→ Frontend dans dossier frontend/"
+            else
+              echo "⚠ Aucun package.json trouvé pour le frontend (lint/tests ignorés)"
+            fi
+          fi
+
+          # --- Détection backend ---
           if [ -f "backend/Dockerfile" ]; then
+            HAS_BACK="true"
             BACK_FILE="backend/Dockerfile"
             BACK_CONTEXT="backend"
+            echo "→ backend Dockerfile : backend/Dockerfile"
           elif [ -f "Dockerfile.backend" ]; then
+            HAS_BACK="true"
             BACK_FILE="Dockerfile.backend"
             BACK_CONTEXT="."
+            echo "→ backend Dockerfile : Dockerfile.backend"
           fi
 
-          # --- Decide mode ---
-          if [ -n "${FRONT_FILE}" ] && [ -n "${BACK_FILE}" ]; then
+          # --- Choix du mode ---
+          if [ "${HAS_FRONT}" = "true" ] && [ "${HAS_BACK}" = "true" ]; then
             DEPLOY_MODE="dual"
-          else
-            # Mono: look for a plain Dockerfile at root
-            if [ ! -f "Dockerfile" ]; then
-              echo "ERROR: no Dockerfile found at repository root."
-              exit 1
-            fi
+          elif [ "${HAS_FRONT}" = "true" ] && [ "${HAS_BACK}" = "false" ]; then
+            DEPLOY_MODE="front-only"
+          elif [ "${HAS_BACK}" = "true" ] && [ "${HAS_FRONT}" = "false" ]; then
+            DEPLOY_MODE="back-only"
+          elif [ -f "Dockerfile" ]; then
+            DEPLOY_MODE="mono"
             MONO_FILE="Dockerfile"
+          else
+            echo "❌ ERREUR : aucun Dockerfile trouvé."
+            exit 1
           fi
 
-          echo "DEPLOY_MODE=${DEPLOY_MODE}"     >> "$GITHUB_ENV"
-          echo "FRONT_FILE=${FRONT_FILE}"       >> "$GITHUB_ENV"
-          echo "FRONT_CONTEXT=${FRONT_CONTEXT}" >> "$GITHUB_ENV"
-          echo "BACK_FILE=${BACK_FILE}"         >> "$GITHUB_ENV"
-          echo "BACK_CONTEXT=${BACK_CONTEXT}"   >> "$GITHUB_ENV"
-          echo "MONO_FILE=${MONO_FILE}"         >> "$GITHUB_ENV"
+          echo "DEPLOY_MODE=${DEPLOY_MODE}"           >> "$GITHUB_ENV"
+          echo "HAS_FRONT=${HAS_FRONT}"               >> "$GITHUB_ENV"
+          echo "HAS_BACK=${HAS_BACK}"                 >> "$GITHUB_ENV"
+          echo "FRONT_FILE=${FRONT_FILE}"             >> "$GITHUB_ENV"
+          echo "FRONT_CONTEXT=${FRONT_CONTEXT}"       >> "$GITHUB_ENV"
+          echo "BACK_FILE=${BACK_FILE}"               >> "$GITHUB_ENV"
+          echo "BACK_CONTEXT=${BACK_CONTEXT}"         >> "$GITHUB_ENV"
+          echo "MONO_FILE=${MONO_FILE}"               >> "$GITHUB_ENV"
+          echo "FRONT_AT_ROOT=${FRONT_AT_ROOT}"       >> "$GITHUB_ENV"
 
-          echo "→ DEPLOY_MODE=${DEPLOY_MODE}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  DEPLOY_MODE        = ${DEPLOY_MODE}"
+          echo "  FRONT_AT_ROOT      = ${FRONT_AT_ROOT}"
+          echo "  FRONT_FILE         = ${FRONT_FILE}"
+          echo "  BACK_FILE          = ${BACK_FILE}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-      # ── 3. Tests — Frontend (Node.js) ───────────────────────────
-      #  Triggered only when frontend/package.json exists
+      # ── 3. Tests unitaires ───────────────────────────────────────
+      # Frontend Node.js (soit à la racine, soit dans frontend/)
       - name: Test frontend (Node.js)
-        if: hashFiles('frontend/package.json') != ''
+        if: env.HAS_FRONT == 'true' && (hashFiles('package.json') != '' || hashFiles('frontend/package.json') != '')
         run: |
-          echo "▶ Running Node.js tests for frontend…"
-          cd frontend
-          npm install
-          npm test
+          echo "▶ Tests Node.js frontend"
+          if [ "${{ env.FRONT_AT_ROOT }}" = "true" ]; then
+            npm install
+            npm test
+          else
+            cd frontend
+            npm install
+            npm test
+          fi
 
-      # ── 4. Tests — Backend (auto-detect language) ────────────────
-      #  Each sub-step is gated on the presence of its signature file.
-
+      # Backend Java / Maven
       - name: Test backend (Java / Maven)
         if: hashFiles('backend/pom.xml') != ''
         run: |
-          echo "▶ Running Maven tests for backend…"
+          echo "▶ Tests Maven backend"
           cd backend && mvn test
 
+      # Backend Python
       - name: Test backend (Python / pytest)
         if: hashFiles('backend/requirements.txt') != ''
         run: |
-          echo "▶ Running pytest for backend…"
+          echo "▶ Tests pytest backend"
           cd backend
           pip install -r requirements.txt
           pytest
 
+      # Backend Go
       - name: Test backend (Go)
         if: hashFiles('backend/go.mod') != ''
         run: |
-          echo "▶ Running go test for backend…"
+          echo "▶ Tests Go backend"
           cd backend && go test ./...
 
-      # ── 5. Lint — Angular (frontend) ────────────────────────────
-      #  Condition (bash): frontend/package.json exists AND contains a "lint" script.
-      #  • If the script is missing → warning + continue (non-blocking).
-      #  • If the script exists     → npm run lint (blocking on error).
+      # ── 4. Lint frontend (Angular / ESLint) ──────────────────────
       - name: Lint frontend (Angular / ESLint)
-        if: hashFiles('frontend/package.json') != ''
+        if: env.HAS_FRONT == 'true' && (hashFiles('package.json') != '' || hashFiles('frontend/package.json') != '')
         run: |
-          echo "▶ Checking for lint script in frontend/package.json…"
-          if node -e "const p=require('./frontend/package.json'); process.exit(p.scripts && p.scripts.lint ? 0 : 1);" 2>/dev/null; then
-            echo "✔ lint script found — running npm run lint"
-            cd frontend && npm run lint
+          echo "▶ Vérification du script lint"
+          if [ "${{ env.FRONT_AT_ROOT }}" = "true" ]; then
+            if node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts.lint ? 0 : 1);" 2>/dev/null; then
+              echo "✔ script lint trouvé — npm run lint"
+              npm run lint
+            else
+              echo "⚠ Aucun script lint dans package.json"
+            fi
           else
-            echo "⚠ WARNING: no 'lint' script in frontend/package.json — skipping Angular lint."
+            cd frontend
+            if node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts.lint ? 0 : 1);" 2>/dev/null; then
+              echo "✔ script lint trouvé — npm run lint"
+              npm run lint
+            else
+              echo "⚠ Aucun script lint dans frontend/package.json"
+            fi
           fi
 
-      # ── 6. Lint — Spring Boot / Checkstyle ──────────────────────
-      #  Condition (bash): backend/pom.xml exists AND contains "checkstyle".
-      #  • If the plugin is absent → warning + continue (non-blocking).
-      #  • If the plugin is present → mvn checkstyle:check (blocking on error).
+      # ── 5. Lint backend (Checkstyle) ─────────────────────────────
       - name: Lint backend (Spring Boot / Checkstyle)
         if: hashFiles('backend/pom.xml') != ''
         run: |
-          echo "▶ Checking for maven-checkstyle-plugin in backend/pom.xml…"
+          echo "▶ Vérification de maven-checkstyle-plugin"
           if grep -qi "checkstyle" backend/pom.xml; then
-            echo "✔ Checkstyle plugin found — running mvn checkstyle:check"
             cd backend && mvn checkstyle:check
           else
-            echo "⚠ WARNING: maven-checkstyle-plugin not declared in pom.xml — skipping Checkstyle lint."
+            echo "⚠ Checkstyle non configuré"
           fi
 
-      # ── 7. Lint — Dockerfiles (hadolint) ────────────────────────
-      #  Uses the official hadolint Docker image (no global install needed).
-      #  • MONO : lints MONO_FILE (Dockerfile at root).
-      #  • DUAL : lints FRONT_FILE then BACK_FILE.
-      #  A lint error makes the step FAIL (a non-conformant Dockerfile must be fixed).
+      # ── 6. Lint Dockerfiles (hadolint) ──────────────────────────
       - name: Lint Dockerfiles (hadolint)
         run: |
           lint_dockerfile() {
             local FILE="$1"
             if [ -z "${FILE}" ] || [ ! -f "${FILE}" ]; then
-              echo "⚠ WARNING: Dockerfile not found at '${FILE}' — skipping."
+              echo "⚠ Dockerfile absent : ${FILE}"
               return 0
             fi
             echo "▶ hadolint → ${FILE}"
             docker run --rm -i hadolint/hadolint < "${FILE}"
-            echo "✔ ${FILE} passed hadolint"
+            echo "✔ ${FILE}"
           }
 
-          if [ "${{ env.DEPLOY_MODE }}" = "dual" ]; then
-            echo "── Dual mode: linting frontend and backend Dockerfiles ──"
-            lint_dockerfile "${{ env.FRONT_FILE }}"
-            lint_dockerfile "${{ env.BACK_FILE }}"
-          else
-            echo "── Mono mode: linting root Dockerfile ──"
-            lint_dockerfile "${{ env.MONO_FILE }}"
-          fi
+          case "${{ env.DEPLOY_MODE }}" in
+            dual)
+              lint_dockerfile "${{ env.FRONT_FILE }}"
+              lint_dockerfile "${{ env.BACK_FILE }}"
+              ;;
+            front-only)
+              lint_dockerfile "${{ env.FRONT_FILE }}"
+              ;;
+            back-only)
+              lint_dockerfile "${{ env.BACK_FILE }}"
+              ;;
+            mono)
+              lint_dockerfile "${{ env.MONO_FILE }}"
+              ;;
+          esac
 
+      # ── 7. Trust Nexus certificate ───────────────────────────────
       - name: Trust Nexus certificate
         run: |
           sudo mkdir -p /etc/docker/certs.d/192.168.1.239:8085
@@ -192,178 +251,165 @@ jobs:
             /usr/local/share/ca-certificates/nexus.crt
           sudo update-ca-certificates
 
-      # ── 8. Trust Nexus certificate ───────────────────────────────
-      # ── 9. Docker login ──────────────────────────────────────────
+      # ── 8. Docker login ──────────────────────────────────────────
       - name: Docker login to Nexus registry
         run: |
           echo "nexus111" | docker login 192.168.1.239:8085 \
             -u admin --password-stdin
 
-      # ── 10. Build & push image(s) ─────────────────────────────────
-      #  MONO  → one image: APP_NAME:sha
-      #  DUAL  → two images: APP_NAME-front:sha  /  APP_NAME-back:sha
-
+      # ── 9. Build & push image(s) ─────────────────────────────────
       - name: Build & push image (mono)
         if: env.DEPLOY_MODE == 'mono'
         run: |
           IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}:${{ github.sha }}"
-          echo "▶ Building mono image: ${IMAGE}"
-          docker build \
-            -f "${{ env.MONO_FILE }}" \
-            -t "${IMAGE}" \
-            .
+          docker build -f "${{ env.MONO_FILE }}" -t "${IMAGE}" .
+          docker push "${IMAGE}"
+
+      - name: Build & push image (front-only)
+        if: env.DEPLOY_MODE == 'front-only'
+        run: |
+          IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-front:${{ github.sha }}"
+          docker build -f "${{ env.FRONT_FILE }}" -t "${IMAGE}" "${{ env.FRONT_CONTEXT }}"
+          docker push "${IMAGE}"
+
+      - name: Build & push image (back-only)
+        if: env.DEPLOY_MODE == 'back-only'
+        run: |
+          IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-back:${{ github.sha }}"
+          docker build -f "${{ env.BACK_FILE }}" -t "${IMAGE}" "${{ env.BACK_CONTEXT }}"
           docker push "${IMAGE}"
 
       - name: Build & push frontend image (dual)
         if: env.DEPLOY_MODE == 'dual'
         run: |
           IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-front:${{ github.sha }}"
-          echo "▶ Building frontend image: ${IMAGE}"
-          docker build \
-            -f "${{ env.FRONT_FILE }}" \
-            -t "${IMAGE}" \
-            "${{ env.FRONT_CONTEXT }}"
+          docker build -f "${{ env.FRONT_FILE }}" -t "${IMAGE}" "${{ env.FRONT_CONTEXT }}"
           docker push "${IMAGE}"
 
       - name: Build & push backend image (dual)
         if: env.DEPLOY_MODE == 'dual'
         run: |
           IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-back:${{ github.sha }}"
-          echo "▶ Building backend image: ${IMAGE}"
-          docker build \
-            -f "${{ env.BACK_FILE }}" \
-            -t "${IMAGE}" \
-            "${{ env.BACK_CONTEXT }}"
+          docker build -f "${{ env.BACK_FILE }}" -t "${IMAGE}" "${{ env.BACK_CONTEXT }}"
           docker push "${IMAGE}"
 
-      # ── 11. Update GitOps repository ─────────────────────────────
-      #  Clones gitops-environments, then:
-      #    MONO : creates/updates environments/staging/APP_NAME/
-      #    DUAL : creates/updates environments/staging/APP_NAME-front/
-      #                                        environments/staging/APP_NAME-back/
-      #  In both cases generates (idempotently) the ArgoCD Application YAML.
+      # ── 10. Update GitOps repo ───────────────────────────────────
       - name: Update GitOps repo
         env:
           GITOPS_PAT: ${{ secrets.GITOPS_TOKEN }}
         run: |
-          # ── helpers ──────────────────────────────────────────────
           APP_NAME="${{ env.APP_NAME }}"
           SHA="${{ github.sha }}"
           REGISTRY="192.168.1.239:8085/selfkhaoula"
           GITOPS_REPO="https://x-access-token:${GITOPS_PAT}@github.com/khaoulahamza/gitops-environments.git"
 
-          # ── clone ────────────────────────────────────────────────
           git clone "${GITOPS_REPO}" gitops-environments
           cd gitops-environments
           git config user.email "ci@github.com"
-          git config user.name  "GitHub Actions"
+          git config user.name "GitHub Actions"
 
-          # ════════════════════════════════════════════════════════
-          #  write_values  <component>  <image-repo>  <sha>
-          #    Idempotent: creates the file on first run,
-          #    only updates repository + tag on subsequent runs.
-          # ════════════════════════════════════════════════════════
           write_values() {
-            local COMP="$1"   # e.g. "my-app" or "my-app-front"
-            local REPO="$2"   # full image path without tag
-            local TAG="$3"
-
+            local COMP="$1" REPO="$2" TAG="$3"
             local DIR="environments/staging/${COMP}"
-            local PATH="${DIR}/values.yaml"
+            local VPATH="${DIR}/values.yaml"
             mkdir -p "${DIR}"
-
-            if [ ! -f "${PATH}" ]; then
-              # First deployment: generate full values file
-              printf 'name: %s\n'                                  "${COMP}"  > "${PATH}"
-              printf 'replicaCount: 1\n'                                      >> "${PATH}"
-              printf 'image:\n'                                                >> "${PATH}"
-              printf '  repository: "%s"\n'                        "${REPO}"  >> "${PATH}"
-              printf '  tag: "%s"\n'                               "${TAG}"   >> "${PATH}"
-              printf '  pullPolicy: IfNotPresent\n'                           >> "${PATH}"
-              printf 'imagePullSecrets:\n'                                     >> "${PATH}"
-              printf '  - name: nexus-registry-secret\n'                      >> "${PATH}"
-              printf 'service:\n'                                              >> "${PATH}"
-              printf '  type: ClusterIP\n'                                    >> "${PATH}"
-              printf '  port: 80\n'                                           >> "${PATH}"
-              printf '  targetPort: 80\n'                                     >> "${PATH}"
-              printf 'ingress:\n'                                              >> "${PATH}"
-              printf '  enabled: true\n'                                      >> "${PATH}"
-              printf '  className: nginx\n'                                   >> "${PATH}"
-              printf '  host: %s.staging.local\n'                 "${COMP}"  >> "${PATH}"
-              printf '  path: /\n'                                            >> "${PATH}"
-              printf '  pathType: Prefix\n'                                   >> "${PATH}"
-              printf 'resources:\n'                                            >> "${PATH}"
-              printf '  limits:\n'                                             >> "${PATH}"
-              printf '    cpu: 500m\n'                                        >> "${PATH}"
-              printf '    memory: 512Mi\n'                                    >> "${PATH}"
-              printf '  requests:\n'                                           >> "${PATH}"
-              printf '    cpu: 250m\n'                                        >> "${PATH}"
-              printf '    memory: 256Mi\n'                                    >> "${PATH}"
-              printf 'env: []\n'                                               >> "${PATH}"
+            if [ ! -f "${VPATH}" ]; then
+              cat > "${VPATH}" <<EOF
+name: ${COMP}
+replicaCount: 1
+image:
+  repository: "${REPO}"
+  tag: "${TAG}"
+  pullPolicy: IfNotPresent
+imagePullSecrets:
+  - name: nexus-registry-secret
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 80
+ingress:
+  enabled: true
+  className: nginx
+  host: ${COMP}.staging.local
+  path: /
+  pathType: Prefix
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+env: []
+EOF
             else
-              # Subsequent deployments: only update image coordinates
-              sed -i "s|repository:.*|repository: \"${REPO}\"|" "${PATH}"
-              sed -i "s|tag:.*|tag: \"${TAG}\"|"                 "${PATH}"
+              sed -i "s|repository:.*|repository: \"${REPO}\"|" "${VPATH}"
+              sed -i "s|tag:.*|tag: \"${TAG}\"|" "${VPATH}"
             fi
           }
 
-          # ════════════════════════════════════════════════════════
-          #  write_argocd  <component>
-          #    Creates the ArgoCD Application YAML if absent.
-          #    (ArgoCD itself handles image tag updates via values.yaml)
-          # ════════════════════════════════════════════════════════
           write_argocd() {
             local COMP="$1"
-            local ARGOCD_PATH="argocd-applications/${COMP}.yaml"
+            local APATH="argocd-applications/${COMP}.yaml"
             mkdir -p argocd-applications
-
-            if [ ! -f "${ARGOCD_PATH}" ]; then
-              printf 'apiVersion: argoproj.io/v1alpha1\n'                             > "${ARGOCD_PATH}"
-              printf 'kind: Application\n'                                            >> "${ARGOCD_PATH}"
-              printf 'metadata:\n'                                                    >> "${ARGOCD_PATH}"
-              printf '  name: %s\n'                              "${COMP}"            >> "${ARGOCD_PATH}"
-              printf '  namespace: argocd\n'                                          >> "${ARGOCD_PATH}"
-              printf 'spec:\n'                                                        >> "${ARGOCD_PATH}"
-              printf '  project: stagiaires\n'                                        >> "${ARGOCD_PATH}"
-              printf '  sources:\n'                                                   >> "${ARGOCD_PATH}"
-              printf '    - repoURL: https://github.com/khaoulahamza/devops-templates\n' >> "${ARGOCD_PATH}"
-              printf '      targetRevision: main\n'                                   >> "${ARGOCD_PATH}"
-              printf '      path: helm-charts/app-generic\n'                          >> "${ARGOCD_PATH}"
-              printf '      helm:\n'                                                  >> "${ARGOCD_PATH}"
-              printf '        valueFiles:\n'                                          >> "${ARGOCD_PATH}"
-              printf '          - $values/environments/staging/%s/values.yaml\n' "${COMP}" >> "${ARGOCD_PATH}"
-              printf '    - repoURL: https://github.com/khaoulahamza/gitops-environments\n' >> "${ARGOCD_PATH}"
-              printf '      targetRevision: main\n'                                   >> "${ARGOCD_PATH}"
-              printf '      ref: values\n'                                            >> "${ARGOCD_PATH}"
-              printf '  destination:\n'                                               >> "${ARGOCD_PATH}"
-              printf '    server: https://kubernetes.default.svc\n'                   >> "${ARGOCD_PATH}"
-              printf '    namespace: staging-%s\n'              "${COMP}"             >> "${ARGOCD_PATH}"
-              printf '  syncPolicy:\n'                                                >> "${ARGOCD_PATH}"
-              printf '    automated:\n'                                               >> "${ARGOCD_PATH}"
-              printf '      prune: true\n'                                            >> "${ARGOCD_PATH}"
-              printf '      selfHeal: true\n'                                         >> "${ARGOCD_PATH}"
-              printf '    syncOptions:\n'                                             >> "${ARGOCD_PATH}"
-              printf '      - CreateNamespace=true\n'                                 >> "${ARGOCD_PATH}"
+            if [ ! -f "${APATH}" ]; then
+              cat > "${APATH}" <<EOF
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ${COMP}
+  namespace: argocd
+spec:
+  project: stagiaires
+  sources:
+    - repoURL: https://github.com/khaoulahamza/devops-templates
+      targetRevision: main
+      path: helm-charts/app-generic
+      helm:
+        valueFiles:
+          - \$values/environments/staging/${COMP}/values.yaml
+    - repoURL: https://github.com/khaoulahamza/gitops-environments
+      targetRevision: main
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: staging-${COMP}
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+EOF
             fi
           }
 
-          # ── Apply helpers depending on mode ──────────────────────
-          if [ "${{ env.DEPLOY_MODE }}" = "dual" ]; then
-            # DUAL MODE
-            write_values "${APP_NAME}-front" "${REGISTRY}/${APP_NAME}-front" "${SHA}"
-            write_values "${APP_NAME}-back"  "${REGISTRY}/${APP_NAME}-back"  "${SHA}"
-            write_argocd "${APP_NAME}-front"
-            write_argocd "${APP_NAME}-back"
-            COMMIT_MSG="[${APP_NAME}] deploy front+back -> ${SHA}"
-          else
-            # MONO MODE (backward-compatible)
-            write_values "${APP_NAME}" "${REGISTRY}/${APP_NAME}" "${SHA}"
-            write_argocd "${APP_NAME}"
-            COMMIT_MSG="[${APP_NAME}] deploy -> ${SHA}"
-          fi
+          MODE="${{ env.DEPLOY_MODE }}"
+          case "${MODE}" in
+            mono)
+              write_values "${APP_NAME}" "${REGISTRY}/${APP_NAME}" "${SHA}"
+              write_argocd "${APP_NAME}"
+              COMMIT_MSG="[${APP_NAME}] deploy -> ${SHA}"
+              ;;
+            front-only)
+              write_values "${APP_NAME}-front" "${REGISTRY}/${APP_NAME}-front" "${SHA}"
+              write_argocd "${APP_NAME}-front"
+              COMMIT_MSG="[${APP_NAME}] deploy front -> ${SHA}"
+              ;;
+            back-only)
+              write_values "${APP_NAME}-back" "${REGISTRY}/${APP_NAME}-back" "${SHA}"
+              write_argocd "${APP_NAME}-back"
+              COMMIT_MSG="[${APP_NAME}] deploy back -> ${SHA}"
+              ;;
+            dual)
+              write_values "${APP_NAME}-front" "${REGISTRY}/${APP_NAME}-front" "${SHA}"
+              write_values "${APP_NAME}-back"  "${REGISTRY}/${APP_NAME}-back"  "${SHA}"
+              write_argocd "${APP_NAME}-front"
+              write_argocd "${APP_NAME}-back"
+              COMMIT_MSG="[${APP_NAME}] deploy front+back -> ${SHA}"
+              ;;
+          esac
 
-          # ── Commit & push (only if there are actual changes) ─────
           git add .
-          git diff --cached --quiet \
-            || git commit -m "${COMMIT_MSG}"
+          git diff --cached --quiet || git commit -m "${COMMIT_MSG}"
           git push "${GITOPS_REPO}" main

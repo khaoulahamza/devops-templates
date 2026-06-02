@@ -73,6 +73,15 @@ jobs:
           echo "MONO_FILE=${MONO_FILE}"         >> "$GITHUB_ENV"
           echo "FRONT_AT_ROOT=${FRONT_AT_ROOT}" >> "$GITHUB_ENV"
 
+      - name: Setup Node.js
+        run: |
+          if ! command -v node &>/dev/null; then
+            echo "Installation de Node.js..."
+            curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+            sudo apt-get install -y nodejs
+          fi
+          echo "Node: $(node -v) | npm: $(npm -v)"
+
       - name: Test frontend (Node.js)
         if: >
           env.HAS_FRONT == 'true' &&

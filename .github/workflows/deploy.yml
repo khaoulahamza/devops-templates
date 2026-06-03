@@ -12,6 +12,16 @@ jobs:
     outputs:
       mode: ${{ steps.detect.outputs.mode }}
     steps:
+      # ============================================================
+      # FIX: clean workspace manually before checkout to avoid
+      # "EACCES: permission denied" errors on self-hosted runners
+      # ============================================================
+      - name: Clean workspace
+        run: |
+          cd ${{ github.workspace }}
+          sudo rm -rf ./*
+        continue-on-error: true
+
       - uses: actions/checkout@v4
 
       - name: Detect mono vs micro

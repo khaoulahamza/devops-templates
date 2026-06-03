@@ -11,7 +11,6 @@ jobs:
     runs-on: self-hosted
     timeout-minutes: 60
 
-    # PostgreSQL service for backend tests
     services:
       postgres:
         image: postgres:15-alpine
@@ -176,12 +175,22 @@ jobs:
             echo "⚠️ Checkstyle non configuré, ignoré."
           fi
 
+      # ── LINT DOCKERFILES (HADOLINT) – VERSION CORRIGÉE ─────────
       - name: "🔍 Lint Dockerfiles (hadolint)"
         run: |
           lint_dockerfile() {
             local FILE="$1"
-            [ -z "${FILE}" ] || [ ! -f "${FILE}" ] && return 0
-            docker run --rm -i 192.168.1.239:8085/selfkhaoula/hadolint:latest < "${FILE}"
+            if [ -z "${FILE}" ] || [ ! -f "${FILE}" ]; then
+              echo "⚠️ Fichier Dockerfile non trouvé: ${FILE}, ignoré."
+              return 0
+            fi
+            # Utilise un bind mount pour éviter les problèmes de stdin
+            local DIR=$(dirname "${FILE}")
+            local BASE=$(basename "${FILE}")
+            docker run --rm \
+              -v "${GITHUB_WORKSPACE}/${DIR}:/mnt" \
+              192.168.1.239:8085/selfkhaoula/hadolint:latest \
+              hadolint "/mnt/${BASE}"
           }
           case "${{ env.DEPLOY_MODE }}" in
             dual)       lint_dockerfile "${{ env.FRONT_FILE }}"; lint_dockerfile "${{ env.BACK_FILE }}" ;;

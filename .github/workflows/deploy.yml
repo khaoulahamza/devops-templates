@@ -13,6 +13,7 @@ jobs:
       mode: ${{ steps.detect.outputs.mode }}
     steps:
       - uses: actions/checkout@v4
+
       - name: Detect mono vs micro
         id: detect
         run: |
@@ -20,10 +21,11 @@ jobs:
           for dir in */; do
             dir="${dir%/}"
             case "${dir}" in
-              frontend|backend|.github|.git|node_modules|target|dist) continue ;;
+              frontend|backend|.github|.git|node_modules|target|dist|docs|scripts|config|helm|k8s) continue ;;
             esac
             [ -f "${dir}/Dockerfile" ] && SERVICE_COUNT=$((SERVICE_COUNT + 1))
           done
+
           HAS_CLASSIC="false"
           { [ -f "frontend/Dockerfile" ] || [ -f "Dockerfile.frontend" ] || \
             [ -f "backend/Dockerfile"  ] || [ -f "Dockerfile.backend"  ] || \
@@ -31,10 +33,10 @@ jobs:
 
           if [ "${SERVICE_COUNT}" -ge 2 ] && [ "${HAS_CLASSIC}" = "false" ]; then
             echo "mode=micro" >> "$GITHUB_OUTPUT"
-            echo "✅ Mode : MICROSERVICES"
+            echo "✅ Mode détecté : MICROSERVICES (${SERVICE_COUNT} services)"
           else
-            echo "mode=mono"  >> "$GITHUB_OUTPUT"
-            echo "✅ Mode : MONO"
+            echo "mode=mono" >> "$GITHUB_OUTPUT"
+            echo "✅ Mode détecté : MONO"
           fi
 
   mono:

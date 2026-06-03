@@ -175,7 +175,7 @@ jobs:
             echo "⚠️ Checkstyle non configuré, ignoré."
           fi
 
-      # ── LINT DOCKERFILES (HADOLINT) – VERSION CORRIGÉE ─────────
+      # ── LINT DOCKERFILES (HADOLINT) – AVEC VALIDATION ──────────
       - name: "🔍 Lint Dockerfiles (hadolint)"
         run: |
           lint_dockerfile() {
@@ -184,7 +184,14 @@ jobs:
               echo "⚠️ Fichier Dockerfile non trouvé: ${FILE}, ignoré."
               return 0
             fi
-            # Utilise un bind mount pour éviter les problèmes de stdin
+            # Vérification que le fichier semble être un vrai Dockerfile
+            FIRST_LINE=$(head -n1 "${FILE}")
+            if [[ ! "$FIRST_LINE" =~ ^FROM[[:space:]] ]]; then
+              echo "❌ Le fichier ${FILE} ne semble pas être un Dockerfile valide (première ligne: '${FIRST_LINE}')."
+              echo "   Contenu des 10 premières lignes :"
+              head -n10 "${FILE}"
+              exit 1
+            fi
             local DIR=$(dirname "${FILE}")
             local BASE=$(basename "${FILE}")
             docker run --rm \

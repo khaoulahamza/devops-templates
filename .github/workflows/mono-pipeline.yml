@@ -82,12 +82,12 @@ jobs:
           if [ "${{ env.FRONT_AT_ROOT }}" = "true" ]; then
             docker run --rm \
               -v "$PWD:/app" -w /app \
-              192.168.1.239:8086/node:20-alpine \
+              192.168.1.239:8085/selfkhaoula/node:20-alpine \
               npm install --legacy-peer-deps
           else
             docker run --rm \
               -v "$PWD/frontend:/app" -w /app \
-              192.168.1.239:8086/node:20-alpine \
+              192.168.1.239:8085/selfkhaoula/node:20-alpine \
               npm install --legacy-peer-deps
           fi
 
@@ -115,7 +115,7 @@ jobs:
           docker run --rm \
             -v "$PWD/backend:/app" -w /app \
             -e MAVEN_OPTS="-Xmx512m" \
-            192.168.1.239:8086/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
+            192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
             mvn test -B -Dspring.profiles.active=test -DskipTests=false
 
       - name: "🧪 Test backend (Python)"
@@ -123,7 +123,7 @@ jobs:
         run: |
           docker run --rm \
             -v "$PWD/backend:/app" -w /app \
-            192.168.1.239:8086/python:3.11-slim \
+            192.168.1.239:8085/selfkhaoula/python:3.11-slim \
             sh -c "pip install -r requirements.txt -q && pytest --tb=short"
 
       - name: "🧪 Test backend (Go)"
@@ -131,7 +131,7 @@ jobs:
         run: |
           docker run --rm \
             -v "$PWD/backend:/app" -w /app \
-            192.168.1.239:8086/golang:1.22-alpine \
+            192.168.1.239:8085/selfkhaoula/golang:1.22-alpine \
             go test ./... -v
 
       # ── LINT ───────────────────────────────────────────────────
@@ -141,7 +141,7 @@ jobs:
           MOUNT=$( [ "${{ env.FRONT_AT_ROOT }}" = "true" ] && echo "$PWD" || echo "$PWD/frontend" )
           docker run --rm \
             -v "${MOUNT}:/app" -w /app \
-            192.168.1.239:8086/node:20-alpine \
+            192.168.1.239:8085/selfkhaoula/node:20-alpine \
             sh -c "if node -e \"const p=require('./package.json'); process.exit(p.scripts&&p.scripts.lint?0:1);\" 2>/dev/null; then npm run lint; else echo '⚠️ Pas de script lint, ignoré.'; fi"
 
       - name: "🔍 Lint backend (Checkstyle)"
@@ -150,7 +150,7 @@ jobs:
           if grep -qi "checkstyle" backend/pom.xml; then
             docker run --rm \
               -v "$PWD/backend:/app" -w /app \
-              192.168.1.239:8086/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
+              192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
               mvn checkstyle:check -B
           else
             echo "⚠️ Checkstyle non configuré, ignoré."
@@ -161,7 +161,7 @@ jobs:
           lint_dockerfile() {
             local FILE="$1"
             [ -z "${FILE}" ] || [ ! -f "${FILE}" ] && return 0
-            docker run --rm -i 192.168.1.239:8086/hadolint/hadolint < "${FILE}"
+            docker run --rm -i 192.168.1.239:8085/selfkhaoula/hadolint:latest < "${FILE}"
           }
           case "${{ env.DEPLOY_MODE }}" in
             dual)       lint_dockerfile "${{ env.FRONT_FILE }}"; lint_dockerfile "${{ env.BACK_FILE }}" ;;

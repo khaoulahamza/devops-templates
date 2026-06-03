@@ -11,9 +11,7 @@ jobs:
     runs-on: self-hosted
     timeout-minutes: 60
 
-    # ─────────────────────────────────────────────────────────────
     # PostgreSQL service for backend tests
-    # ─────────────────────────────────────────────────────────────
     services:
       postgres:
         image: postgres:15-alpine
@@ -127,7 +125,6 @@ jobs:
               npm test -- --watch=false --browsers=ChromeHeadlessNoSandbox 2>&1 | tee frontend-test.log
           fi
 
-      # 👇 MODIFIED: Backend test with PostgreSQL service
       - name: "🧪 Test backend (Java/Maven)"
         if: env.HAS_MAVEN == 'true'
         run: |
@@ -158,7 +155,40 @@ jobs:
             go test ./... -v
 
       # ── LINT ───────────────────────────────────────────────────
-      # ... (keep all your lint steps unchanged)
+      - name: "🔍 Lint frontend (ESLint)"
+        if: env.HAS_FRONT == 'true'
+        run: |
+          MOUNT=$( [ "${{ env.FRONT_AT_ROOT }}" = "true" ] && echo "$PWD" || echo "$PWD/frontend" )
+          docker run --rm \
+            -v "${MOUNT}:/app" -w /app \
+            192.168.1.239:8085/selfkhaoula/node:20-alpine \
+            sh -c "if node -e \"const p=require('./package.json'); process.exit(p.scripts&&p.scripts.lint?0:1);\" 2>/dev/null; then npm run lint; else echo '⚠️ Pas de script lint, ignoré.'; fi"
+
+      - name: "🔍 Lint backend (Checkstyle)"
+        if: env.HAS_MAVEN == 'true'
+        run: |
+          if grep -qi "checkstyle" backend/pom.xml; then
+            docker run --rm \
+              -v "$PWD/backend:/app" -w /app \
+              192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
+              mvn checkstyle:check -B
+          else
+            echo "⚠️ Checkstyle non configuré, ignoré."
+          fi
+
+      - name: "🔍 Lint Dockerfiles (hadolint)"
+        run: |
+          lint_dockerfile() {
+            local FILE="$1"
+            [ -z "${FILE}" ] || [ ! -f "${FILE}" ] && return 0
+            docker run --rm -i 192.168.1.239:8085/selfkhaoula/hadolint:latest < "${FILE}"
+          }
+          case "${{ env.DEPLOY_MODE }}" in
+            dual)       lint_dockerfile "${{ env.FRONT_FILE }}"; lint_dockerfile "${{ env.BACK_FILE }}" ;;
+            front-only) lint_dockerfile "${{ env.FRONT_FILE }}" ;;
+            back-only)  lint_dockerfile "${{ env.BACK_FILE }}"  ;;
+            mono)       lint_dockerfile "${{ env.MONO_FILE }}"  ;;
+          esac
 
       # ── DOCKER LOGIN ───────────────────────────────────────────
       - name: Trust Nexus certificate
@@ -172,10 +202,156 @@ jobs:
         run: echo "nexus111" | docker login 192.168.1.239:8085 -u admin --password-stdin
 
       # ── BUILD & PUSH ───────────────────────────────────────────
-      # ... (keep all your build & push steps unchanged)
+      - name: "🐳 Build & push (mono)"
+        if: env.DEPLOY_MODE == 'mono'
+        run: |
+          IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}:${{ github.sha }}"
+          docker build -f "${{ env.MONO_FILE }}" -t "${IMAGE}" .
+          docker push "${IMAGE}"
+          echo "SMOKE_IMAGES=${IMAGE}" >> "$GITHUB_ENV"
+
+      - name: "🐳 Build & push (front-only)"
+        if: env.DEPLOY_MODE == 'front-only'
+        run: |
+          IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-front:${{ github.sha }}"
+          docker build -f "${{ env.FRONT_FILE }}" -t "${IMAGE}" "${{ env.FRONT_CONTEXT }}"
+          docker push "${IMAGE}"
+          echo "SMOKE_IMAGES=${IMAGE}" >> "$GITHUB_ENV"
+
+      - name: "🐳 Build & push (back-only)"
+        if: env.DEPLOY_MODE == 'back-only'
+        run: |
+          IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-back:${{ github.sha }}"
+          docker build -f "${{ env.BACK_FILE }}" -t "${IMAGE}" "${{ env.BACK_CONTEXT }}"
+          docker push "${IMAGE}"
+          echo "SMOKE_IMAGES=${IMAGE}" >> "$GITHUB_ENV"
+
+      - name: "🐳 Build & push frontend (dual)"
+        if: env.DEPLOY_MODE == 'dual'
+        run: |
+          FRONT_IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-front:${{ github.sha }}"
+          docker build -f "${{ env.FRONT_FILE }}" -t "${FRONT_IMAGE}" "${{ env.FRONT_CONTEXT }}"
+          docker push "${FRONT_IMAGE}"
+
+      - name: "🐳 Build & push backend (dual)"
+        if: env.DEPLOY_MODE == 'dual'
+        run: |
+          BACK_IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-back:${{ github.sha }}"
+          docker build -f "${{ env.BACK_FILE }}" -t "${BACK_IMAGE}" "${{ env.BACK_CONTEXT }}"
+          docker push "${BACK_IMAGE}"
+          echo "SMOKE_IMAGES=192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-front:${{ github.sha }} ${BACK_IMAGE}" >> "$GITHUB_ENV"
+
+      # ── TRIVY SCAN ─────────────────────────────────────────────
+      - name: "🔒 Trivy scan (mono)"
+        if: env.DEPLOY_MODE == 'mono'
+        run: |
+          IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}:${{ github.sha }}"
+          trivy image --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed "$IMAGE"
+
+      - name: "🔒 Trivy scan (front-only)"
+        if: env.DEPLOY_MODE == 'front-only'
+        run: |
+          IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-front:${{ github.sha }}"
+          trivy image --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed "$IMAGE"
+
+      - name: "🔒 Trivy scan (back-only)"
+        if: env.DEPLOY_MODE == 'back-only'
+        run: |
+          IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-back:${{ github.sha }}"
+          trivy image --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed "$IMAGE"
+
+      - name: "🔒 Trivy scan (dual)"
+        if: env.DEPLOY_MODE == 'dual'
+        run: |
+          FRONT_IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-front:${{ github.sha }}"
+          BACK_IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-back:${{ github.sha }}"
+          trivy image --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed "$FRONT_IMAGE"
+          trivy image --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed "$BACK_IMAGE"
 
       # ── SMOKE TESTS ────────────────────────────────────────────
-      # ... (keep unchanged)
+      - name: "🔥 Smoke tests"
+        run: |
+          for IMAGE in ${{ env.SMOKE_IMAGES }}; do
+            echo "→ Smoke test : ${IMAGE}"
+            CONTAINER_ID=$(docker run -d --rm "${IMAGE}" 2>/dev/null || true)
+            if [ -z "${CONTAINER_ID}" ]; then
+              echo "❌ Container non démarré : ${IMAGE}"; exit 1
+            fi
+            sleep 5
+            STATUS=$(docker inspect --format='{{.State.Status}}' "${CONTAINER_ID}" 2>/dev/null || echo "gone")
+            if [ "${STATUS}" = "exited" ]; then
+              EXIT_CODE=$(docker inspect --format='{{.State.ExitCode}}' "${CONTAINER_ID}" 2>/dev/null || echo "1")
+              docker logs "${CONTAINER_ID}" 2>/dev/null || true
+              [ "${EXIT_CODE}" != "0" ] && echo "❌ Smoke test échoué (exit ${EXIT_CODE})" && exit 1
+            fi
+            docker stop "${CONTAINER_ID}" 2>/dev/null || true
+            echo "✅ OK : ${IMAGE}"
+          done
 
       # ── GITOPS ─────────────────────────────────────────────────
-      # ... (keep unchanged)
+      - name: "🚀 Update GitOps"
+        env:
+          GITOPS_PAT: ${{ secrets.GITOPS_TOKEN }}
+        run: |
+          APP_NAME="${{ env.APP_NAME }}"
+          SHA="${{ github.sha }}"
+          REGISTRY="192.168.1.239:8085/selfkhaoula"
+          GITOPS_REPO="https://x-access-token:${GITOPS_PAT}@github.com/khaoulahamza/gitops-environments.git"
+
+          git clone "${GITOPS_REPO}" gitops-environments
+          cd gitops-environments
+          git config user.email "ci@github.com"
+          git config user.name "GitHub Actions"
+
+          write_values() {
+            local COMP="$1" REPO="$2" TAG="$3"
+            local VPATH="environments/staging/${COMP}/values.yaml"
+            mkdir -p "$(dirname ${VPATH})"
+            if [ ! -f "${VPATH}" ]; then
+              printf 'name: %s\nreplicaCount: 1\nimage:\n  repository: "%s"\n  tag: "%s"\n  pullPolicy: IfNotPresent\nimagePullSecrets:\n  - name: nexus-registry-secret\nservice:\n  type: ClusterIP\n  port: 80\n  targetPort: 80\ningress:\n  enabled: true\n  className: nginx\n  host: %s.staging.local\n  path: /\n  pathType: Prefix\nresources:\n  limits:\n    cpu: 500m\n    memory: 512Mi\n  requests:\n    cpu: 250m\n    memory: 256Mi\nenv: []\n' \
+                "${COMP}" "${REPO}" "${TAG}" "${COMP}" > "${VPATH}"
+            else
+              sed -i "s|repository:.*|repository: \"${REPO}\"|" "${VPATH}"
+              sed -i "s|tag:.*|tag: \"${TAG}\"|"                "${VPATH}"
+            fi
+          }
+
+          write_argocd() {
+            local COMP="$1"
+            local APATH="argocd-applications/${COMP}.yaml"
+            mkdir -p argocd-applications
+            [ -f "${APATH}" ] && return 0
+            printf 'apiVersion: argoproj.io/v1alpha1\nkind: Application\nmetadata:\n  name: %s\n  namespace: argocd\nspec:\n  project: stagiaires\n  sources:\n    - repoURL: https://github.com/khaoulahamza/devops-templates\n      targetRevision: main\n      path: helm-charts/app-generic\n      helm:\n        valueFiles:\n          - $values/environments/staging/%s/values.yaml\n    - repoURL: https://github.com/khaoulahamza/gitops-environments\n      targetRevision: main\n      ref: values\n  destination:\n    server: https://kubernetes.default.svc\n    namespace: staging-%s\n  syncPolicy:\n    automated:\n      prune: true\n      selfHeal: true\n    syncOptions:\n      - CreateNamespace=true\n' \
+              "${COMP}" "${COMP}" "${COMP}" > "${APATH}"
+          }
+
+          case "${{ env.DEPLOY_MODE }}" in
+            mono)
+              write_values "${APP_NAME}"       "${REGISTRY}/${APP_NAME}"       "${SHA}"
+              write_argocd "${APP_NAME}"
+              COMMIT_MSG="[${APP_NAME}] deploy -> ${SHA}"
+              ;;
+            front-only)
+              write_values "${APP_NAME}-front" "${REGISTRY}/${APP_NAME}-front" "${SHA}"
+              write_argocd "${APP_NAME}-front"
+              COMMIT_MSG="[${APP_NAME}] deploy front -> ${SHA}"
+              ;;
+            back-only)
+              write_values "${APP_NAME}-back"  "${REGISTRY}/${APP_NAME}-back"  "${SHA}"
+              write_argocd "${APP_NAME}-back"
+              COMMIT_MSG="[${APP_NAME}] deploy back -> ${SHA}"
+              ;;
+            dual)
+              write_values "${APP_NAME}-front" "${REGISTRY}/${APP_NAME}-front" "${SHA}"
+              write_values "${APP_NAME}-back"  "${REGISTRY}/${APP_NAME}-back"  "${SHA}"
+              write_argocd "${APP_NAME}-front"
+              write_argocd "${APP_NAME}-back"
+              COMMIT_MSG="[${APP_NAME}] deploy front+back -> ${SHA}"
+              ;;
+          esac
+
+          git add .
+          git diff --cached --quiet && echo "Rien à commiter." && exit 0
+          git pull --rebase origin main
+          git commit -m "${COMMIT_MSG}"
+          git push origin main

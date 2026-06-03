@@ -83,7 +83,7 @@ jobs:
         run: |
           docker run --rm \
             -v "$PWD/${{ env.SERVICE }}:/app" -w /app \
-            192.168.1.239:8086/node:20-alpine \
+            192.168.1.239:8085/selfkhaoula/node:20-alpine \
             npm install --legacy-peer-deps
 
       # ── TESTS ──────────────────────────────────────────────────
@@ -101,7 +101,7 @@ jobs:
         run: |
           docker run --rm \
             -v "$PWD/${{ env.SERVICE }}:/app" -w /app \
-            192.168.1.239:8086/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
+            192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
             mvn test -B -Dspring.profiles.active=test -DskipTests=false
 
       - name: "🧪 Test Python"
@@ -109,7 +109,7 @@ jobs:
         run: |
           docker run --rm \
             -v "$PWD/${{ env.SERVICE }}:/app" -w /app \
-            192.168.1.239:8086/python:3.11-slim \
+            192.168.1.239:8085/selfkhaoula/python:3.11-slim \
             sh -c "pip install -r requirements.txt -q && pytest --tb=short"
 
       - name: "🧪 Test Go"
@@ -117,7 +117,7 @@ jobs:
         run: |
           docker run --rm \
             -v "$PWD/${{ env.SERVICE }}:/app" -w /app \
-            192.168.1.239:8086/golang:1.22-alpine \
+            192.168.1.239:8085/selfkhaoula/golang:1.22-alpine \
             go test ./... -v
 
       # ── LINT ───────────────────────────────────────────────────
@@ -126,12 +126,12 @@ jobs:
         run: |
           docker run --rm \
             -v "$PWD/${{ env.SERVICE }}:/app" -w /app \
-            192.168.1.239:8086/node:20-alpine \
+            192.168.1.239:8085/selfkhaoula/node:20-alpine \
             sh -c "if node -e \"const p=require('./package.json'); process.exit(p.scripts&&p.scripts.lint?0:1);\" 2>/dev/null; then npm run lint; else echo '⚠️ Pas de script lint, ignoré.'; fi"
 
       - name: "🔍 Lint Dockerfile"
         run: |
-          docker run --rm -i 192.168.1.239:8086/hadolint/hadolint < "${{ env.SERVICE }}/Dockerfile"
+          docker run --rm -i 192.168.1.239:8085/selfkhaoula/hadolint:latest < "${{ env.SERVICE }}/Dockerfile"
 
       # ── DOCKER LOGIN ───────────────────────────────────────────
       - name: Trust Nexus certificate

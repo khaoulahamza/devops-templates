@@ -83,7 +83,7 @@ jobs:
           echo "FRONT_AT_ROOT=${FRONT_AT_ROOT}" >> "$GITHUB_ENV"
 
       # ─────────────────────────────────────────────
-      # 4. DETECT BACKEND TECH (après checkout)
+      # 4. DETECT BACKEND TECH + JAVA VERSION
       # ─────────────────────────────────────────────
       - name: Detect backend technology
         run: |
@@ -91,8 +91,39 @@ jobs:
           [ -f "backend/requirements.txt" ] && echo "HAS_PYTHON=true" >> "$GITHUB_ENV" || echo "HAS_PYTHON=false" >> "$GITHUB_ENV"
           [ -f "backend/go.mod" ]           && echo "HAS_GO=true"     >> "$GITHUB_ENV" || echo "HAS_GO=false"     >> "$GITHUB_ENV"
 
+      - name: Detect Java version from pom.xml
+        if: env.HAS_MAVEN == 'true'
+        run: |
+          # Cherche <java.version> en priorité, puis <maven.compiler.source>, sinon défaut 17
+          JAVA_VERSION=$(grep -oP '(?<=<java.version>)[^<]+' backend/pom.xml 2>/dev/null | head -1)
+          if [ -z "${JAVA_VERSION}" ]; then
+            JAVA_VERSION=$(grep -oP '(?<=<maven.compiler.source>)[^<]+' backend/pom.xml 2>/dev/null | head -1)
+          fi
+          if [ -z "${JAVA_VERSION}" ]; then
+            JAVA_VERSION="17"
+          fi
+          echo "JAVA_VERSION=${JAVA_VERSION}" >> "$GITHUB_ENV"
+          echo "Java version détectée : ${JAVA_VERSION}"
+
       # ─────────────────────────────────────────────
-      # 5. SETUP NODE.JS
+      # 5. SETUP JAVA & MAVEN (version auto-détectée)
+      # ─────────────────────────────────────────────
+      - name: Setup Java & Maven
+        if: env.HAS_MAVEN == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: 'maven'
+
+      - name: Verify Java & Maven
+        if: env.HAS_MAVEN == 'true'
+        run: |
+          echo "=== Java ===" && java -version
+          echo "=== Maven ===" && mvn -version
+
+      # ─────────────────────────────────────────────
+      # 6. SETUP NODE.JS
       # ─────────────────────────────────────────────
       - name: Setup Node.js
         if: env.HAS_FRONT == 'true'
@@ -101,7 +132,7 @@ jobs:
           node-version: '20'
 
       # ─────────────────────────────────────────────
-      # 6. CACHE DEPENDANCES
+      # 7. CACHE DEPENDANCES
       # ─────────────────────────────────────────────
       - name: Cache npm dependencies
         if: env.HAS_FRONT == 'true'
@@ -115,15 +146,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-npm-
 
-      - name: Cache Maven dependencies
-        if: env.HAS_MAVEN == 'true'
-        uses: actions/cache@v4
-        with:
-          path: ~/.m2/repository
-          key: ${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
-          restore-keys: |
-            ${{ runner.os }}-maven-
-
       - name: Cache Go dependencies
         if: env.HAS_GO == 'true'
         uses: actions/cache@v4
@@ -134,7 +156,7 @@ jobs:
             ${{ runner.os }}-go-
 
       # ─────────────────────────────────────────────
-      # 7. INSTALL CHROME HEADLESS
+      # 8. INSTALL CHROME HEADLESS
       # ─────────────────────────────────────────────
       - name: Install Google Chrome (for Karma tests)
         if: env.HAS_FRONT == 'true'
@@ -153,7 +175,7 @@ jobs:
           echo "CHROME_BIN=/usr/bin/google-chrome" >> "$GITHUB_ENV"
 
       # ─────────────────────────────────────────────
-      # 8. INSTALL FRONTEND DEPENDENCIES (une seule fois)
+      # 9. INSTALL FRONTEND DEPENDENCIES (une seule fois)
       # ─────────────────────────────────────────────
       - name: Install frontend dependencies
         if: env.HAS_FRONT == 'true'
@@ -165,24 +187,22 @@ jobs:
           fi
 
       # ─────────────────────────────────────────────
-      # 9. TESTS
+      # 10. TESTS
       # ─────────────────────────────────────────────
       - name: Test frontend (Angular / Karma)
         if: env.HAS_FRONT == 'true'
-        run: |
-          if [ "${{ env.FRONT_AT_ROOT }}" = "true" ]; then
-            npm test -- --watch=false --browsers=ChromeHeadless \
-              --no-sandbox \
-              2>&1 | tee frontend-test.log
-          else
-            cd frontend
-            npm test -- --watch=false --browsers=ChromeHeadless \
-              --no-sandbox \
-              2>&1 | tee ../frontend-test.log
-          fi
         env:
           CHROME_BIN: /usr/bin/google-chrome
           CHROMIUM_FLAGS: "--no-sandbox --headless --disable-gpu --disable-dev-shm-usage"
+        run: |
+          if [ "${{ env.FRONT_AT_ROOT }}" = "true" ]; then
+            npm test -- --watch=false --browsers=ChromeHeadless --no-sandbox \
+              2>&1 | tee frontend-test.log
+          else
+            cd frontend
+            npm test -- --watch=false --browsers=ChromeHeadless --no-sandbox \
+              2>&1 | tee ../frontend-test.log
+          fi
 
       - name: Test backend (Java / Maven)
         if: env.HAS_MAVEN == 'true'
@@ -200,7 +220,7 @@ jobs:
         run: cd backend && go test ./... -v
 
       # ─────────────────────────────────────────────
-      # 10. LINT
+      # 11. LINT
       # ─────────────────────────────────────────────
       - name: Lint frontend (ESLint)
         if: env.HAS_FRONT == 'true'
@@ -243,7 +263,7 @@ jobs:
           esac
 
       # ─────────────────────────────────────────────
-      # 11. DOCKER LOGIN
+      # 12. DOCKER LOGIN
       # ─────────────────────────────────────────────
       - name: Trust Nexus certificate
         run: |
@@ -256,7 +276,7 @@ jobs:
         run: echo "nexus111" | docker login 192.168.1.239:8085 -u admin --password-stdin
 
       # ─────────────────────────────────────────────
-      # 12. BUILD & PUSH
+      # 13. BUILD & PUSH
       # ─────────────────────────────────────────────
       - name: Build & push image (mono)
         if: env.DEPLOY_MODE == 'mono'
@@ -294,7 +314,7 @@ jobs:
           docker push "${IMAGE}"
 
       # ─────────────────────────────────────────────
-      # 13. GITOPS UPDATE
+      # 14. GITOPS UPDATE
       # ─────────────────────────────────────────────
       - name: Update GitOps repo
         env:

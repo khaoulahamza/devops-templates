@@ -14,6 +14,7 @@ jobs:
       app_name: ${{ steps.scan.outputs.app_name }}
     steps:
       - uses: actions/checkout@v4
+
       - name: Scan services
         id: scan
         run: |
@@ -21,6 +22,7 @@ jobs:
             | tr '[:upper:]' '[:lower:]' \
             | sed 's/[^a-z0-9-]/-/g')
           echo "app_name=${APP_NAME}" >> "$GITHUB_OUTPUT"
+
           SERVICES="["
           FIRST=true
           for dir in */; do
@@ -32,7 +34,7 @@ jobs:
               [ "${FIRST}" = "false" ] && SERVICES="${SERVICES},"
               SERVICES="${SERVICES}\"${dir}\""
               FIRST="false"
-              echo "✅ Service : ${dir}"
+              echo "✅ Service détecté : ${dir}"
             fi
           done
           SERVICES="${SERVICES}]"
@@ -54,31 +56,45 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ── DETECT TECH ────────────────────────────────────────────
       - name: Detect technology
         run: |
           SERVICE="${{ env.SERVICE }}"
+
           if [ -f "${SERVICE}/pom.xml" ]; then
             echo "HAS_MAVEN=true" >> "$GITHUB_ENV"
             JAVA_VERSION=$(grep -oP '(?<=<java.version>)[^<]+' "${SERVICE}/pom.xml" 2>/dev/null | head -1)
+            [ -z "${JAVA_VERSION}" ] && JAVA_VERSION=$(grep -oP '(?<=<maven.compiler.source>)[^<]+' "${SERVICE}/pom.xml" 2>/dev/null | head -1)
             [ -z "${JAVA_VERSION}" ] && JAVA_VERSION="17"
             echo "JAVA_VERSION=${JAVA_VERSION}" >> "$GITHUB_ENV"
           else
             echo "HAS_MAVEN=false" >> "$GITHUB_ENV"
           fi
+
           [ -f "${SERVICE}/angular.json"      ] && echo "HAS_ANGULAR=true"  >> "$GITHUB_ENV" || echo "HAS_ANGULAR=false"  >> "$GITHUB_ENV"
           [ -f "${SERVICE}/requirements.txt"  ] && echo "HAS_PYTHON=true"   >> "$GITHUB_ENV" || echo "HAS_PYTHON=false"   >> "$GITHUB_ENV"
           [ -f "${SERVICE}/go.mod"            ] && echo "HAS_GO=true"       >> "$GITHUB_ENV" || echo "HAS_GO=false"       >> "$GITHUB_ENV"
+
           echo "IMAGE=${{ env.REGISTRY }}/${{ env.APP_NAME }}-${{ env.SERVICE }}:${{ github.sha }}" >> "$GITHUB_ENV"
 
-      - name: Install frontend deps
+      # ── INSTALL FRONTEND (via Docker) ──────────────────────────
+      - name: Install frontend dependencies
         if: env.HAS_ANGULAR == 'true'
-        run: cd "${{ env.SERVICE }}" && npm install --legacy-peer-deps
+        run: |
+          docker run --rm \
+            -v "$PWD/${{ env.SERVICE }}:/app" -w /app \
+            192.168.1.239:8086/node:20-alpine \
+            npm install --legacy-peer-deps
 
+      # ── TESTS ──────────────────────────────────────────────────
       - name: "🧪 Test Angular"
         if: env.HAS_ANGULAR == 'true'
-        env:
-          CHROME_BIN: /usr/bin/google-chrome
-        run: cd "${{ env.SERVICE }}" && npm test -- --watch=false --browsers=ChromeHeadlessNoSandbox
+        run: |
+          docker run --rm \
+            -v "$PWD/${{ env.SERVICE }}:/app" -w /app \
+            --cap-add=SYS_ADMIN \
+            192.168.1.239:8085/selfkhaoula/node:20-browsers \
+            npm test -- --watch=false --browsers=ChromeHeadlessNoSandbox
 
       - name: "🧪 Test Java"
         if: env.HAS_MAVEN == 'true'
@@ -104,9 +120,20 @@ jobs:
             192.168.1.239:8086/golang:1.22-alpine \
             go test ./... -v
 
-      - name: "🔍 Lint Dockerfile"
-        run: docker run --rm -i 192.168.1.239:8086/hadolint/hadolint < "${{ env.SERVICE }}/Dockerfile"
+      # ── LINT ───────────────────────────────────────────────────
+      - name: "🔍 Lint frontend (ESLint)"
+        if: env.HAS_ANGULAR == 'true'
+        run: |
+          docker run --rm \
+            -v "$PWD/${{ env.SERVICE }}:/app" -w /app \
+            192.168.1.239:8086/node:20-alpine \
+            sh -c "if node -e \"const p=require('./package.json'); process.exit(p.scripts&&p.scripts.lint?0:1);\" 2>/dev/null; then npm run lint; else echo '⚠️ Pas de script lint, ignoré.'; fi"
 
+      - name: "🔍 Lint Dockerfile"
+        run: |
+          docker run --rm -i 192.168.1.239:8086/hadolint/hadolint < "${{ env.SERVICE }}/Dockerfile"
+
+      # ── DOCKER LOGIN ───────────────────────────────────────────
       - name: Trust Nexus certificate
         run: |
           sudo mkdir -p /etc/docker/certs.d/192.168.1.239:8085
@@ -117,32 +144,43 @@ jobs:
       - name: Docker login
         run: echo "nexus111" | docker login 192.168.1.239:8085 -u admin --password-stdin
 
+      # ── BUILD & PUSH ───────────────────────────────────────────
       - name: "🐳 Build & push"
         run: |
-          docker build -f "${{ env.SERVICE }}/Dockerfile" -t "${{ env.IMAGE }}" "${{ env.SERVICE }}"
+          docker build \
+            -f "${{ env.SERVICE }}/Dockerfile" \
+            -t "${{ env.IMAGE }}" \
+            "${{ env.SERVICE }}"
           docker push "${{ env.IMAGE }}"
 
+      # ── SMOKE TEST ─────────────────────────────────────────────
       - name: "🔥 Smoke test"
         run: |
-          CONTAINER_ID=$(docker run -d --rm "${{ env.IMAGE }}")
+          CONTAINER_ID=$(docker run -d --rm "${{ env.IMAGE }}" 2>/dev/null || true)
+          if [ -z "${CONTAINER_ID}" ]; then
+            echo "❌ Container non démarré : ${{ env.IMAGE }}"; exit 1
+          fi
           sleep 5
           STATUS=$(docker inspect --format='{{.State.Status}}' "${CONTAINER_ID}" 2>/dev/null || echo "gone")
           if [ "${STATUS}" = "exited" ]; then
-            EXIT_CODE=$(docker inspect --format='{{.State.ExitCode}}' "${CONTAINER_ID}")
-            docker logs "${CONTAINER_ID}" || true
-            [ "${EXIT_CODE}" != "0" ] && exit 1
+            EXIT_CODE=$(docker inspect --format='{{.State.ExitCode}}' "${CONTAINER_ID}" 2>/dev/null || echo "1")
+            docker logs "${CONTAINER_ID}" 2>/dev/null || true
+            [ "${EXIT_CODE}" != "0" ] && echo "❌ Smoke test échoué (exit ${EXIT_CODE})" && exit 1
           fi
           docker stop "${CONTAINER_ID}" 2>/dev/null || true
-          echo "✅ Smoke test OK"
+          echo "✅ Smoke test OK : ${{ env.SERVICE }}"
 
+  # ── GITOPS ───────────────────────────────────────────────────
   gitops:
     needs: [discover, build-service]
     runs-on: self-hosted
     if: success()
     env:
       APP_NAME: ${{ needs.discover.outputs.app_name }}
+
     steps:
       - uses: actions/checkout@v4
+
       - name: "🚀 Update GitOps"
         env:
           GITOPS_PAT: ${{ secrets.GITOPS_TOKEN }}
@@ -150,6 +188,7 @@ jobs:
           APP_NAME="${{ env.APP_NAME }}"
           SHA="${{ github.sha }}"
           REGISTRY="192.168.1.239:8085/selfkhaoula"
+
           git clone "https://x-access-token:${GITOPS_PAT}@github.com/khaoulahamza/gitops-environments.git" gitops-environments
           cd gitops-environments
           git config user.email "ci@github.com"
@@ -168,8 +207,10 @@ jobs:
                 printf 'name: %s\nreplicaCount: 1\nimage:\n  repository: "%s/%s"\n  tag: "%s"\n  pullPolicy: IfNotPresent\nimagePullSecrets:\n  - name: nexus-registry-secret\nservice:\n  type: ClusterIP\n  port: 80\n  targetPort: 80\ningress:\n  enabled: true\n  className: nginx\n  host: %s.staging.local\n  path: /\n  pathType: Prefix\nresources:\n  limits:\n    cpu: 500m\n    memory: 512Mi\n  requests:\n    cpu: 250m\n    memory: 256Mi\nenv: []\n' \
                   "${COMP}" "${REGISTRY}" "${COMP}" "${SHA}" "${COMP}" > "${VPATH}"
               else
+                sed -i "s|repository:.*|repository: \"${REGISTRY}/${COMP}\"|" "${VPATH}"
                 sed -i "s|tag:.*|tag: \"${SHA}\"|" "${VPATH}"
               fi
+
               APATH="argocd-applications/${COMP}.yaml"
               mkdir -p argocd-applications
               if [ ! -f "${APATH}" ]; then

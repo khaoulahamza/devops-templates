@@ -94,7 +94,6 @@ jobs:
       - name: Detect Java version from pom.xml
         if: env.HAS_MAVEN == 'true'
         run: |
-          # Cherche <java.version> en priorité, puis <maven.compiler.source>, sinon défaut 17
           JAVA_VERSION=$(grep -oP '(?<=<java.version>)[^<]+' backend/pom.xml 2>/dev/null | head -1)
           if [ -z "${JAVA_VERSION}" ]; then
             JAVA_VERSION=$(grep -oP '(?<=<maven.compiler.source>)[^<]+' backend/pom.xml 2>/dev/null | head -1)
@@ -106,7 +105,7 @@ jobs:
           echo "Java version détectée : ${JAVA_VERSION}"
 
       # ─────────────────────────────────────────────
-      # 5. SETUP JAVA & MAVEN (version auto-détectée)
+      # 5. SETUP JAVA & MAVEN
       # ─────────────────────────────────────────────
       - name: Setup Java & Maven
         if: env.HAS_MAVEN == 'true'
@@ -175,7 +174,7 @@ jobs:
           echo "CHROME_BIN=/usr/bin/google-chrome" >> "$GITHUB_ENV"
 
       # ─────────────────────────────────────────────
-      # 9. INSTALL FRONTEND DEPENDENCIES (une seule fois)
+      # 9. INSTALL FRONTEND DEPENDENCIES
       # ─────────────────────────────────────────────
       - name: Install frontend dependencies
         if: env.HAS_FRONT == 'true'
@@ -189,24 +188,49 @@ jobs:
       # ─────────────────────────────────────────────
       # 10. TESTS
       # ─────────────────────────────────────────────
+
+      # ✅ FIX 1 : --no-sandbox retiré de la CLI Angular (argument inconnu).
+      #    Le no-sandbox est géré via le custom launcher ChromeHeadlessNoSandbox
+      #    défini dans karma.conf.js (voir commentaire ci-dessous).
+      #
+      #    Dans karma.conf.js de CHAQUE projet Angular, ajouter :
+      #
+      #    customLaunchers: {
+      #      ChromeHeadlessNoSandbox: {
+      #        base: 'ChromeHeadless',
+      #        flags: ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage']
+      #      }
+      #    }
+      #
       - name: Test frontend (Angular / Karma)
         if: env.HAS_FRONT == 'true'
         env:
           CHROME_BIN: /usr/bin/google-chrome
-          CHROMIUM_FLAGS: "--no-sandbox --headless --disable-gpu --disable-dev-shm-usage"
         run: |
           if [ "${{ env.FRONT_AT_ROOT }}" = "true" ]; then
-            npm test -- --watch=false --browsers=ChromeHeadless --no-sandbox \
+            npm test -- --watch=false --browsers=ChromeHeadlessNoSandbox \
               2>&1 | tee frontend-test.log
           else
             cd frontend
-            npm test -- --watch=false --browsers=ChromeHeadless --no-sandbox \
+            npm test -- --watch=false --browsers=ChromeHeadlessNoSandbox \
               2>&1 | tee ../frontend-test.log
           fi
 
+      # ✅ FIX 2 : -DskipTests=false explicite + profil "test" activé pour
+      #    forcer Spring Boot à utiliser application-test.properties (H2)
+      #    au lieu de tenter une connexion PostgreSQL introuvable en CI.
+      #
+      #    Dans le projet Spring Boot, s'assurer que :
+      #    - backend/src/test/resources/application-test.properties existe (H2)
+      #    - La classe de test porte @ActiveProfiles("test")
+      #    - H2 est en dépendance <scope>test</scope> dans pom.xml
+      #
       - name: Test backend (Java / Maven)
         if: env.HAS_MAVEN == 'true'
-        run: cd backend && mvn test -B
+        run: |
+          cd backend && mvn test -B \
+            -Dspring.profiles.active=test \
+            -DskipTests=false
 
       - name: Test backend (Python / pytest)
         if: env.HAS_PYTHON == 'true'
@@ -382,9 +406,6 @@ jobs:
 
           git add .
           git diff --cached --quiet && echo "Rien a commiter." && exit 0
-
-          # Rebase pour eviter les conflits en cas de pipelines paralleles
           git pull --rebase origin main
-
           git commit -m "${COMMIT_MSG}"
           git push origin main

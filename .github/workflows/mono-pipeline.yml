@@ -1,0 +1,307 @@
+name: Mono Pipeline
+
+on:
+  workflow_call:
+    secrets:
+      GITOPS_TOKEN:
+        required: true
+
+jobs:
+  pipeline:
+    runs-on: self-hosted
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set APP_NAME
+        run: |
+          APP_NAME=$(echo "${{ github.event.repository.name }}" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed 's/[^a-z0-9-]/-/g')
+          echo "APP_NAME=${APP_NAME}" >> "$GITHUB_ENV"
+
+      - name: Detect deploy mode & frontend location
+        run: |
+          HAS_FRONT="false"; HAS_BACK="false"
+          FRONT_FILE=""; FRONT_CONTEXT="."; BACK_FILE=""; BACK_CONTEXT="."; MONO_FILE=""
+          FRONT_AT_ROOT="false"
+
+          if   [ -f "frontend/Dockerfile"  ]; then HAS_FRONT="true"; FRONT_FILE="frontend/Dockerfile";  FRONT_CONTEXT="frontend"
+          elif [ -f "Dockerfile.frontend"  ]; then HAS_FRONT="true"; FRONT_FILE="Dockerfile.frontend";  FRONT_CONTEXT="."
+          fi
+          if [ "${HAS_FRONT}" = "true" ] && [ -f "package.json" ] && [ -f "angular.json" ]; then
+            FRONT_AT_ROOT="true"
+          fi
+          if   [ -f "backend/Dockerfile"   ]; then HAS_BACK="true"; BACK_FILE="backend/Dockerfile";  BACK_CONTEXT="backend"
+          elif [ -f "Dockerfile.backend"   ]; then HAS_BACK="true"; BACK_FILE="Dockerfile.backend";  BACK_CONTEXT="."
+          fi
+
+          if   [ "${HAS_FRONT}" = "true" ] && [ "${HAS_BACK}" = "true" ]; then DEPLOY_MODE="dual"
+          elif [ "${HAS_FRONT}" = "true" ];                                 then DEPLOY_MODE="front-only"
+          elif [ "${HAS_BACK}"  = "true" ];                                 then DEPLOY_MODE="back-only"
+          elif [ -f "Dockerfile" ];                                          then DEPLOY_MODE="mono"; MONO_FILE="Dockerfile"
+          else echo "❌ Aucun Dockerfile trouvé."; exit 1
+          fi
+
+          echo "DEPLOY_MODE=${DEPLOY_MODE}"     >> "$GITHUB_ENV"
+          echo "HAS_FRONT=${HAS_FRONT}"         >> "$GITHUB_ENV"
+          echo "HAS_BACK=${HAS_BACK}"           >> "$GITHUB_ENV"
+          echo "FRONT_FILE=${FRONT_FILE}"       >> "$GITHUB_ENV"
+          echo "FRONT_CONTEXT=${FRONT_CONTEXT}" >> "$GITHUB_ENV"
+          echo "BACK_FILE=${BACK_FILE}"         >> "$GITHUB_ENV"
+          echo "BACK_CONTEXT=${BACK_CONTEXT}"   >> "$GITHUB_ENV"
+          echo "MONO_FILE=${MONO_FILE}"         >> "$GITHUB_ENV"
+          echo "FRONT_AT_ROOT=${FRONT_AT_ROOT}" >> "$GITHUB_ENV"
+          echo "✅ Deploy mode : ${DEPLOY_MODE}"
+
+      - name: Detect backend technology & Java version
+        run: |
+          if [ -f "backend/pom.xml" ]; then
+            echo "HAS_MAVEN=true" >> "$GITHUB_ENV"
+            JAVA_VERSION=$(grep -oP '(?<=<java.version>)[^<]+' backend/pom.xml 2>/dev/null | head -1)
+            [ -z "${JAVA_VERSION}" ] && JAVA_VERSION=$(grep -oP '(?<=<maven.compiler.source>)[^<]+' backend/pom.xml 2>/dev/null | head -1)
+            [ -z "${JAVA_VERSION}" ] && JAVA_VERSION="17"
+            echo "JAVA_VERSION=${JAVA_VERSION}" >> "$GITHUB_ENV"
+          else
+            echo "HAS_MAVEN=false" >> "$GITHUB_ENV"
+          fi
+          [ -f "backend/requirements.txt" ] && echo "HAS_PYTHON=true" >> "$GITHUB_ENV" || echo "HAS_PYTHON=false" >> "$GITHUB_ENV"
+          [ -f "backend/go.mod"           ] && echo "HAS_GO=true"     >> "$GITHUB_ENV" || echo "HAS_GO=false"     >> "$GITHUB_ENV"
+
+      - name: Cache npm dependencies
+        if: env.HAS_FRONT == 'true'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.npm
+            frontend/node_modules
+            node_modules
+          key: ${{ runner.os }}-npm-${{ hashFiles('**/package-lock.json') }}
+          restore-keys: ${{ runner.os }}-npm-
+
+      - name: Install frontend dependencies
+        if: env.HAS_FRONT == 'true'
+        run: |
+          if [ "${{ env.FRONT_AT_ROOT }}" = "true" ]; then
+            npm install --legacy-peer-deps
+          else
+            cd frontend && npm install --legacy-peer-deps
+          fi
+
+      # ── TESTS AVANT BUILD ──────────────────────────────────────
+      - name: "🧪 Test frontend (Angular)"
+        if: env.HAS_FRONT == 'true'
+        env:
+          CHROME_BIN: /usr/bin/google-chrome
+        run: |
+          if [ "${{ env.FRONT_AT_ROOT }}" = "true" ]; then
+            npm test -- --watch=false --browsers=ChromeHeadlessNoSandbox 2>&1 | tee frontend-test.log
+          else
+            cd frontend && npm test -- --watch=false --browsers=ChromeHeadlessNoSandbox 2>&1 | tee ../frontend-test.log
+          fi
+
+      - name: "🧪 Test backend (Java/Maven)"
+        if: env.HAS_MAVEN == 'true'
+        run: |
+          docker run --rm \
+            -v "$PWD/backend:/app" -w /app \
+            -e MAVEN_OPTS="-Xmx512m" \
+            192.168.1.239:8086/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
+            mvn test -B -Dspring.profiles.active=test -DskipTests=false
+
+      - name: "🧪 Test backend (Python)"
+        if: env.HAS_PYTHON == 'true'
+        run: |
+          docker run --rm \
+            -v "$PWD/backend:/app" -w /app \
+            192.168.1.239:8086/python:3.11-slim \
+            sh -c "pip install -r requirements.txt -q && pytest --tb=short"
+
+      - name: "🧪 Test backend (Go)"
+        if: env.HAS_GO == 'true'
+        run: |
+          docker run --rm \
+            -v "$PWD/backend:/app" -w /app \
+            192.168.1.239:8086/golang:1.22-alpine \
+            go test ./... -v
+
+      # ── LINT ───────────────────────────────────────────────────
+      - name: "🔍 Lint frontend (ESLint)"
+        if: env.HAS_FRONT == 'true'
+        run: |
+          check_lint() {
+            if node -e "const p=require('./package.json'); process.exit(p.scripts&&p.scripts.lint?0:1);" 2>/dev/null; then
+              npm run lint
+            else
+              echo "⚠️ Pas de script lint, ignoré."
+            fi
+          }
+          if [ "${{ env.FRONT_AT_ROOT }}" = "true" ]; then check_lint
+          else cd frontend && check_lint; fi
+
+      - name: "🔍 Lint backend (Checkstyle)"
+        if: env.HAS_MAVEN == 'true'
+        run: |
+          if grep -qi "checkstyle" backend/pom.xml; then
+            docker run --rm \
+              -v "$PWD/backend:/app" -w /app \
+              192.168.1.239:8086/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
+              mvn checkstyle:check -B
+          else
+            echo "⚠️ Checkstyle non configuré, ignoré."
+          fi
+
+      - name: "🔍 Lint Dockerfiles (hadolint)"
+        run: |
+          lint_dockerfile() {
+            local FILE="$1"
+            [ -z "${FILE}" ] || [ ! -f "${FILE}" ] && return 0
+            docker run --rm -i 192.168.1.239:8086/hadolint/hadolint < "${FILE}"
+          }
+          case "${{ env.DEPLOY_MODE }}" in
+            dual)       lint_dockerfile "${{ env.FRONT_FILE }}"; lint_dockerfile "${{ env.BACK_FILE }}" ;;
+            front-only) lint_dockerfile "${{ env.FRONT_FILE }}" ;;
+            back-only)  lint_dockerfile "${{ env.BACK_FILE }}"  ;;
+            mono)       lint_dockerfile "${{ env.MONO_FILE }}"  ;;
+          esac
+
+      # ── DOCKER LOGIN ───────────────────────────────────────────
+      - name: Trust Nexus certificate
+        run: |
+          sudo mkdir -p /etc/docker/certs.d/192.168.1.239:8085
+          sudo cp /home/ubuntu/nexus/certs/nexus.crt /etc/docker/certs.d/192.168.1.239:8085/ca.crt
+          sudo cp /home/ubuntu/nexus/certs/nexus.crt /usr/local/share/ca-certificates/nexus.crt
+          sudo update-ca-certificates
+
+      - name: Docker login
+        run: echo "nexus111" | docker login 192.168.1.239:8085 -u admin --password-stdin
+
+      # ── BUILD & PUSH ───────────────────────────────────────────
+      - name: "🐳 Build & push (mono)"
+        if: env.DEPLOY_MODE == 'mono'
+        run: |
+          IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}:${{ github.sha }}"
+          docker build -f "${{ env.MONO_FILE }}" -t "${IMAGE}" .
+          docker push "${IMAGE}"
+          echo "SMOKE_IMAGES=${IMAGE}" >> "$GITHUB_ENV"
+
+      - name: "🐳 Build & push (front-only)"
+        if: env.DEPLOY_MODE == 'front-only'
+        run: |
+          IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-front:${{ github.sha }}"
+          docker build -f "${{ env.FRONT_FILE }}" -t "${IMAGE}" "${{ env.FRONT_CONTEXT }}"
+          docker push "${IMAGE}"
+          echo "SMOKE_IMAGES=${IMAGE}" >> "$GITHUB_ENV"
+
+      - name: "🐳 Build & push (back-only)"
+        if: env.DEPLOY_MODE == 'back-only'
+        run: |
+          IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-back:${{ github.sha }}"
+          docker build -f "${{ env.BACK_FILE }}" -t "${IMAGE}" "${{ env.BACK_CONTEXT }}"
+          docker push "${IMAGE}"
+          echo "SMOKE_IMAGES=${IMAGE}" >> "$GITHUB_ENV"
+
+      - name: "🐳 Build & push frontend (dual)"
+        if: env.DEPLOY_MODE == 'dual'
+        run: |
+          IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-front:${{ github.sha }}"
+          docker build -f "${{ env.FRONT_FILE }}" -t "${IMAGE}" "${{ env.FRONT_CONTEXT }}"
+          docker push "${IMAGE}"
+
+      - name: "🐳 Build & push backend (dual)"
+        if: env.DEPLOY_MODE == 'dual'
+        run: |
+          IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-back:${{ github.sha }}"
+          docker build -f "${{ env.BACK_FILE }}" -t "${IMAGE}" "${{ env.BACK_CONTEXT }}"
+          docker push "${IMAGE}"
+          echo "SMOKE_IMAGES=192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-front:${{ github.sha }} ${IMAGE}" >> "$GITHUB_ENV"
+
+      # ── SMOKE TESTS APRÈS BUILD ────────────────────────────────
+      - name: "🔥 Smoke tests"
+        run: |
+          for IMAGE in ${{ env.SMOKE_IMAGES }}; do
+            echo "→ Smoke test : ${IMAGE}"
+            CONTAINER_ID=$(docker run -d --rm "${IMAGE}" 2>/dev/null || true)
+            if [ -z "${CONTAINER_ID}" ]; then
+              echo "❌ Container non démarré : ${IMAGE}"; exit 1
+            fi
+            sleep 5
+            STATUS=$(docker inspect --format='{{.State.Status}}' "${CONTAINER_ID}" 2>/dev/null || echo "gone")
+            if [ "${STATUS}" = "exited" ]; then
+              EXIT_CODE=$(docker inspect --format='{{.State.ExitCode}}' "${CONTAINER_ID}" 2>/dev/null || echo "1")
+              docker logs "${CONTAINER_ID}" 2>/dev/null || true
+              [ "${EXIT_CODE}" != "0" ] && echo "❌ Smoke test échoué (exit ${EXIT_CODE})" && exit 1
+            fi
+            docker stop "${CONTAINER_ID}" 2>/dev/null || true
+            echo "✅ OK : ${IMAGE}"
+          done
+
+      # ── GITOPS ─────────────────────────────────────────────────
+      - name: "🚀 Update GitOps"
+        env:
+          GITOPS_PAT: ${{ secrets.GITOPS_TOKEN }}
+        run: |
+          APP_NAME="${{ env.APP_NAME }}"
+          SHA="${{ github.sha }}"
+          REGISTRY="192.168.1.239:8085/selfkhaoula"
+          GITOPS_REPO="https://x-access-token:${GITOPS_PAT}@github.com/khaoulahamza/gitops-environments.git"
+
+          git clone "${GITOPS_REPO}" gitops-environments
+          cd gitops-environments
+          git config user.email "ci@github.com"
+          git config user.name "GitHub Actions"
+
+          write_values() {
+            local COMP="$1" REPO="$2" TAG="$3"
+            local VPATH="environments/staging/${COMP}/values.yaml"
+            mkdir -p "$(dirname ${VPATH})"
+            if [ ! -f "${VPATH}" ]; then
+              printf 'name: %s\nreplicaCount: 1\nimage:\n  repository: "%s"\n  tag: "%s"\n  pullPolicy: IfNotPresent\nimagePullSecrets:\n  - name: nexus-registry-secret\nservice:\n  type: ClusterIP\n  port: 80\n  targetPort: 80\ningress:\n  enabled: true\n  className: nginx\n  host: %s.staging.local\n  path: /\n  pathType: Prefix\nresources:\n  limits:\n    cpu: 500m\n    memory: 512Mi\n  requests:\n    cpu: 250m\n    memory: 256Mi\nenv: []\n' \
+                "${COMP}" "${REPO}" "${TAG}" "${COMP}" > "${VPATH}"
+            else
+              sed -i "s|repository:.*|repository: \"${REPO}\"|" "${VPATH}"
+              sed -i "s|tag:.*|tag: \"${TAG}\"|"                "${VPATH}"
+            fi
+          }
+
+          write_argocd() {
+            local COMP="$1"
+            local APATH="argocd-applications/${COMP}.yaml"
+            mkdir -p argocd-applications
+            [ -f "${APATH}" ] && return 0
+            printf 'apiVersion: argoproj.io/v1alpha1\nkind: Application\nmetadata:\n  name: %s\n  namespace: argocd\nspec:\n  project: stagiaires\n  sources:\n    - repoURL: https://github.com/khaoulahamza/devops-templates\n      targetRevision: main\n      path: helm-charts/app-generic\n      helm:\n        valueFiles:\n          - $values/environments/staging/%s/values.yaml\n    - repoURL: https://github.com/khaoulahamza/gitops-environments\n      targetRevision: main\n      ref: values\n  destination:\n    server: https://kubernetes.default.svc\n    namespace: staging-%s\n  syncPolicy:\n    automated:\n      prune: true\n      selfHeal: true\n    syncOptions:\n      - CreateNamespace=true\n' \
+              "${COMP}" "${COMP}" "${COMP}" > "${APATH}"
+          }
+
+          case "${{ env.DEPLOY_MODE }}" in
+            mono)
+              write_values "${APP_NAME}"       "${REGISTRY}/${APP_NAME}"       "${SHA}"
+              write_argocd "${APP_NAME}"
+              COMMIT_MSG="[${APP_NAME}] deploy -> ${SHA}"
+              ;;
+            front-only)
+              write_values "${APP_NAME}-front" "${REGISTRY}/${APP_NAME}-front" "${SHA}"
+              write_argocd "${APP_NAME}-front"
+              COMMIT_MSG="[${APP_NAME}] deploy front -> ${SHA}"
+              ;;
+            back-only)
+              write_values "${APP_NAME}-back"  "${REGISTRY}/${APP_NAME}-back"  "${SHA}"
+              write_argocd "${APP_NAME}-back"
+              COMMIT_MSG="[${APP_NAME}] deploy back -> ${SHA}"
+              ;;
+            dual)
+              write_values "${APP_NAME}-front" "${REGISTRY}/${APP_NAME}-front" "${SHA}"
+              write_values "${APP_NAME}-back"  "${REGISTRY}/${APP_NAME}-back"  "${SHA}"
+              write_argocd "${APP_NAME}-front"
+              write_argocd "${APP_NAME}-back"
+              COMMIT_MSG="[${APP_NAME}] deploy front+back -> ${SHA}"
+              ;;
+          esac
+
+          git add .
+          git diff --cached --quiet && echo "Rien à commiter." && exit 0
+          git pull --rebase origin main
+          git commit -m "${COMMIT_MSG}"
+          git push origin main

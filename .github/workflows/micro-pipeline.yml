@@ -1,0 +1,186 @@
+name: Micro Pipeline
+
+on:
+  workflow_call:
+    secrets:
+      GITOPS_TOKEN:
+        required: true
+
+jobs:
+  discover:
+    runs-on: self-hosted
+    outputs:
+      services: ${{ steps.scan.outputs.services }}
+      app_name: ${{ steps.scan.outputs.app_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan services
+        id: scan
+        run: |
+          APP_NAME=$(echo "${{ github.event.repository.name }}" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed 's/[^a-z0-9-]/-/g')
+          echo "app_name=${APP_NAME}" >> "$GITHUB_OUTPUT"
+          SERVICES="["
+          FIRST=true
+          for dir in */; do
+            dir="${dir%/}"
+            case "${dir}" in
+              .github|.git|node_modules|target|dist|docs|scripts|config|helm|k8s) continue ;;
+            esac
+            if [ -f "${dir}/Dockerfile" ]; then
+              [ "${FIRST}" = "false" ] && SERVICES="${SERVICES},"
+              SERVICES="${SERVICES}\"${dir}\""
+              FIRST="false"
+              echo "✅ Service : ${dir}"
+            fi
+          done
+          SERVICES="${SERVICES}]"
+          echo "services=${SERVICES}" >> "$GITHUB_OUTPUT"
+
+  build-service:
+    needs: discover
+    runs-on: self-hosted
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJson(needs.discover.outputs.services) }}
+    env:
+      APP_NAME: ${{ needs.discover.outputs.app_name }}
+      SERVICE:  ${{ matrix.service }}
+      REGISTRY: 192.168.1.239:8085/selfkhaoula
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect technology
+        run: |
+          SERVICE="${{ env.SERVICE }}"
+          if [ -f "${SERVICE}/pom.xml" ]; then
+            echo "HAS_MAVEN=true" >> "$GITHUB_ENV"
+            JAVA_VERSION=$(grep -oP '(?<=<java.version>)[^<]+' "${SERVICE}/pom.xml" 2>/dev/null | head -1)
+            [ -z "${JAVA_VERSION}" ] && JAVA_VERSION="17"
+            echo "JAVA_VERSION=${JAVA_VERSION}" >> "$GITHUB_ENV"
+          else
+            echo "HAS_MAVEN=false" >> "$GITHUB_ENV"
+          fi
+          [ -f "${SERVICE}/angular.json"      ] && echo "HAS_ANGULAR=true"  >> "$GITHUB_ENV" || echo "HAS_ANGULAR=false"  >> "$GITHUB_ENV"
+          [ -f "${SERVICE}/requirements.txt"  ] && echo "HAS_PYTHON=true"   >> "$GITHUB_ENV" || echo "HAS_PYTHON=false"   >> "$GITHUB_ENV"
+          [ -f "${SERVICE}/go.mod"            ] && echo "HAS_GO=true"       >> "$GITHUB_ENV" || echo "HAS_GO=false"       >> "$GITHUB_ENV"
+          echo "IMAGE=${{ env.REGISTRY }}/${{ env.APP_NAME }}-${{ env.SERVICE }}:${{ github.sha }}" >> "$GITHUB_ENV"
+
+      - name: Install frontend deps
+        if: env.HAS_ANGULAR == 'true'
+        run: cd "${{ env.SERVICE }}" && npm install --legacy-peer-deps
+
+      - name: "🧪 Test Angular"
+        if: env.HAS_ANGULAR == 'true'
+        env:
+          CHROME_BIN: /usr/bin/google-chrome
+        run: cd "${{ env.SERVICE }}" && npm test -- --watch=false --browsers=ChromeHeadlessNoSandbox
+
+      - name: "🧪 Test Java"
+        if: env.HAS_MAVEN == 'true'
+        run: |
+          docker run --rm \
+            -v "$PWD/${{ env.SERVICE }}:/app" -w /app \
+            192.168.1.239:8086/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
+            mvn test -B -Dspring.profiles.active=test -DskipTests=false
+
+      - name: "🧪 Test Python"
+        if: env.HAS_PYTHON == 'true'
+        run: |
+          docker run --rm \
+            -v "$PWD/${{ env.SERVICE }}:/app" -w /app \
+            192.168.1.239:8086/python:3.11-slim \
+            sh -c "pip install -r requirements.txt -q && pytest --tb=short"
+
+      - name: "🧪 Test Go"
+        if: env.HAS_GO == 'true'
+        run: |
+          docker run --rm \
+            -v "$PWD/${{ env.SERVICE }}:/app" -w /app \
+            192.168.1.239:8086/golang:1.22-alpine \
+            go test ./... -v
+
+      - name: "🔍 Lint Dockerfile"
+        run: docker run --rm -i 192.168.1.239:8086/hadolint/hadolint < "${{ env.SERVICE }}/Dockerfile"
+
+      - name: Trust Nexus certificate
+        run: |
+          sudo mkdir -p /etc/docker/certs.d/192.168.1.239:8085
+          sudo cp /home/ubuntu/nexus/certs/nexus.crt /etc/docker/certs.d/192.168.1.239:8085/ca.crt
+          sudo cp /home/ubuntu/nexus/certs/nexus.crt /usr/local/share/ca-certificates/nexus.crt
+          sudo update-ca-certificates
+
+      - name: Docker login
+        run: echo "nexus111" | docker login 192.168.1.239:8085 -u admin --password-stdin
+
+      - name: "🐳 Build & push"
+        run: |
+          docker build -f "${{ env.SERVICE }}/Dockerfile" -t "${{ env.IMAGE }}" "${{ env.SERVICE }}"
+          docker push "${{ env.IMAGE }}"
+
+      - name: "🔥 Smoke test"
+        run: |
+          CONTAINER_ID=$(docker run -d --rm "${{ env.IMAGE }}")
+          sleep 5
+          STATUS=$(docker inspect --format='{{.State.Status}}' "${CONTAINER_ID}" 2>/dev/null || echo "gone")
+          if [ "${STATUS}" = "exited" ]; then
+            EXIT_CODE=$(docker inspect --format='{{.State.ExitCode}}' "${CONTAINER_ID}")
+            docker logs "${CONTAINER_ID}" || true
+            [ "${EXIT_CODE}" != "0" ] && exit 1
+          fi
+          docker stop "${CONTAINER_ID}" 2>/dev/null || true
+          echo "✅ Smoke test OK"
+
+  gitops:
+    needs: [discover, build-service]
+    runs-on: self-hosted
+    if: success()
+    env:
+      APP_NAME: ${{ needs.discover.outputs.app_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: "🚀 Update GitOps"
+        env:
+          GITOPS_PAT: ${{ secrets.GITOPS_TOKEN }}
+        run: |
+          APP_NAME="${{ env.APP_NAME }}"
+          SHA="${{ github.sha }}"
+          REGISTRY="192.168.1.239:8085/selfkhaoula"
+          git clone "https://x-access-token:${GITOPS_PAT}@github.com/khaoulahamza/gitops-environments.git" gitops-environments
+          cd gitops-environments
+          git config user.email "ci@github.com"
+          git config user.name "GitHub Actions"
+
+          for dir in ../*/; do
+            dir="${dir%/}"; dir="${dir##*/}"
+            case "${dir}" in
+              .github|.git|node_modules|target|dist|docs|scripts|config|helm|k8s|gitops-environments) continue ;;
+            esac
+            if [ -f "../${dir}/Dockerfile" ]; then
+              COMP="${APP_NAME}-${dir}"
+              VPATH="environments/staging/${COMP}/values.yaml"
+              mkdir -p "$(dirname ${VPATH})"
+              if [ ! -f "${VPATH}" ]; then
+                printf 'name: %s\nreplicaCount: 1\nimage:\n  repository: "%s/%s"\n  tag: "%s"\n  pullPolicy: IfNotPresent\nimagePullSecrets:\n  - name: nexus-registry-secret\nservice:\n  type: ClusterIP\n  port: 80\n  targetPort: 80\ningress:\n  enabled: true\n  className: nginx\n  host: %s.staging.local\n  path: /\n  pathType: Prefix\nresources:\n  limits:\n    cpu: 500m\n    memory: 512Mi\n  requests:\n    cpu: 250m\n    memory: 256Mi\nenv: []\n' \
+                  "${COMP}" "${REGISTRY}" "${COMP}" "${SHA}" "${COMP}" > "${VPATH}"
+              else
+                sed -i "s|tag:.*|tag: \"${SHA}\"|" "${VPATH}"
+              fi
+              APATH="argocd-applications/${COMP}.yaml"
+              mkdir -p argocd-applications
+              if [ ! -f "${APATH}" ]; then
+                printf 'apiVersion: argoproj.io/v1alpha1\nkind: Application\nmetadata:\n  name: %s\n  namespace: argocd\nspec:\n  project: stagiaires\n  sources:\n    - repoURL: https://github.com/khaoulahamza/devops-templates\n      targetRevision: main\n      path: helm-charts/app-generic\n      helm:\n        valueFiles:\n          - $values/environments/staging/%s/values.yaml\n    - repoURL: https://github.com/khaoulahamza/gitops-environments\n      targetRevision: main\n      ref: values\n  destination:\n    server: https://kubernetes.default.svc\n    namespace: staging-%s\n  syncPolicy:\n    automated:\n      prune: true\n      selfHeal: true\n    syncOptions:\n      - CreateNamespace=true\n' \
+                  "${COMP}" "${COMP}" "${COMP}" > "${APATH}"
+              fi
+            fi
+          done
+
+          git add .
+          git diff --cached --quiet && echo "Rien à commiter." && exit 0
+          git pull --rebase origin main
+          git commit -m "[${APP_NAME}] deploy all services -> ${SHA}"
+          git push origin main

@@ -498,7 +498,14 @@ jobs:
           esac
 
           git add .
+          # Si aucun changement, on sort
           git diff --cached --quiet && echo "Rien à commiter." && exit 0
-          git pull --rebase origin main
+
+          # Commit local
           git commit -m "${COMMIT_MSG}"
+
+          # Récupérer les éventuelles nouvelles modifications distantes (rebase)
+          git pull --rebase origin main
+
+          # Push final
           git push origin main

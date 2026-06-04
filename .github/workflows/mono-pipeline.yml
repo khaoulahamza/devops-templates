@@ -271,35 +271,35 @@ jobs:
         if: env.DEPLOY_MODE == 'mono'
         run: |
           IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}:${{ github.sha }}"
-          docker build -f "${{ env.MONO_FILE }}" -t "${IMAGE}" .
+          DOCKER_BUILDKIT=0 docker build -f "${{ env.MONO_FILE }}" -t "${IMAGE}" .
           echo "LOCAL_IMAGE=${IMAGE}" >> "$GITHUB_ENV"
 
       - name: "🐳 Build (front-only)"
         if: env.DEPLOY_MODE == 'front-only'
         run: |
           IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-front:${{ github.sha }}"
-          docker build -f "${{ env.FRONT_FILE }}" -t "${IMAGE}" "${{ env.FRONT_CONTEXT }}"
+          DOCKER_BUILDKIT=0 docker build -f "${{ env.FRONT_FILE }}" -t "${IMAGE}" "${{ env.FRONT_CONTEXT }}"
           echo "LOCAL_IMAGE=${IMAGE}" >> "$GITHUB_ENV"
 
       - name: "🐳 Build (back-only)"
         if: env.DEPLOY_MODE == 'back-only'
         run: |
           IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-back:${{ github.sha }}"
-          docker build -f "${{ env.BACK_FILE }}" -t "${IMAGE}" "${{ env.BACK_CONTEXT }}"
+          DOCKER_BUILDKIT=0 docker build -f "${{ env.BACK_FILE }}" -t "${IMAGE}" "${{ env.BACK_CONTEXT }}"
           echo "LOCAL_IMAGE=${IMAGE}" >> "$GITHUB_ENV"
 
       - name: "🐳 Build frontend (dual)"
         if: env.DEPLOY_MODE == 'dual'
         run: |
           FRONT_IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-front:${{ github.sha }}"
-          docker build -f "${{ env.FRONT_FILE }}" -t "${FRONT_IMAGE}" "${{ env.FRONT_CONTEXT }}"
+          DOCKER_BUILDKIT=0 docker build -f "${{ env.FRONT_FILE }}" -t "${FRONT_IMAGE}" "${{ env.FRONT_CONTEXT }}"
           echo "FRONT_LOCAL_IMAGE=${FRONT_IMAGE}" >> "$GITHUB_ENV"
 
       - name: "🐳 Build backend (dual)"
         if: env.DEPLOY_MODE == 'dual'
         run: |
           BACK_IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-back:${{ github.sha }}"
-          docker build -f "${{ env.BACK_FILE }}" -t "${BACK_IMAGE}" "${{ env.BACK_CONTEXT }}"
+          DOCKER_BUILDKIT=0 docker build -f "${{ env.BACK_FILE }}" -t "${BACK_IMAGE}" "${{ env.BACK_CONTEXT }}"
           echo "BACK_LOCAL_IMAGE=${BACK_IMAGE}" >> "$GITHUB_ENV"
 
       # ── TESTS SUR IMAGE LOCALE (Trivy + Smoke) avant push ────────
@@ -364,30 +364,87 @@ jobs:
             echo "✅ OK"
           done
 
-      # ── PUSH (simple, sans cache) ──────────────────────────────
+      # ── PUSH avec retry (fix digest mismatch) ──────────────────
       - name: "🐳 Push (mono)"
         if: env.DEPLOY_MODE == 'mono'
         run: |
-          docker push "${{ env.LOCAL_IMAGE }}"
+          docker_push_with_retry() {
+            local IMAGE="$1"
+            local MAX_RETRIES=3
+            local ATTEMPT=0
+            until docker push "${IMAGE}"; do
+              ATTEMPT=$((ATTEMPT + 1))
+              if [ "${ATTEMPT}" -ge "${MAX_RETRIES}" ]; then
+                echo "❌ Push échoué après ${MAX_RETRIES} tentatives."
+                exit 1
+              fi
+              echo "⚠️ Push échoué (tentative ${ATTEMPT}/${MAX_RETRIES}), retry dans 10s..."
+              sleep 10
+            done
+          }
+          docker_push_with_retry "${{ env.LOCAL_IMAGE }}"
           echo "SMOKE_IMAGES=${{ env.LOCAL_IMAGE }}" >> "$GITHUB_ENV"
 
       - name: "🐳 Push (front-only)"
         if: env.DEPLOY_MODE == 'front-only'
         run: |
-          docker push "${{ env.LOCAL_IMAGE }}"
+          docker_push_with_retry() {
+            local IMAGE="$1"
+            local MAX_RETRIES=3
+            local ATTEMPT=0
+            until docker push "${IMAGE}"; do
+              ATTEMPT=$((ATTEMPT + 1))
+              if [ "${ATTEMPT}" -ge "${MAX_RETRIES}" ]; then
+                echo "❌ Push échoué après ${MAX_RETRIES} tentatives."
+                exit 1
+              fi
+              echo "⚠️ Push échoué (tentative ${ATTEMPT}/${MAX_RETRIES}), retry dans 10s..."
+              sleep 10
+            done
+          }
+          docker_push_with_retry "${{ env.LOCAL_IMAGE }}"
           echo "SMOKE_IMAGES=${{ env.LOCAL_IMAGE }}" >> "$GITHUB_ENV"
 
       - name: "🐳 Push (back-only)"
         if: env.DEPLOY_MODE == 'back-only'
         run: |
-          docker push "${{ env.LOCAL_IMAGE }}"
+          docker_push_with_retry() {
+            local IMAGE="$1"
+            local MAX_RETRIES=3
+            local ATTEMPT=0
+            until docker push "${IMAGE}"; do
+              ATTEMPT=$((ATTEMPT + 1))
+              if [ "${ATTEMPT}" -ge "${MAX_RETRIES}" ]; then
+                echo "❌ Push échoué après ${MAX_RETRIES} tentatives."
+                exit 1
+              fi
+              echo "⚠️ Push échoué (tentative ${ATTEMPT}/${MAX_RETRIES}), retry dans 10s..."
+              sleep 10
+            done
+          }
+          docker_push_with_retry "${{ env.LOCAL_IMAGE }}"
           echo "SMOKE_IMAGES=${{ env.LOCAL_IMAGE }}" >> "$GITHUB_ENV"
 
       - name: "🐳 Push (dual)"
         if: env.DEPLOY_MODE == 'dual'
         run: |
-          docker push "${{ env.FRONT_LOCAL_IMAGE }}"
-          docker push "${{ env.BACK_LOCAL_IMAGE }}"
+          docker_push_with_retry() {
+            local IMAGE="$1"
+            local MAX_RETRIES=3
+            local ATTEMPT=0
+            until docker push "${IMAGE}"; do
+              ATTEMPT=$((ATTEMPT + 1))
+              if [ "${ATTEMPT}" -ge "${MAX_RETRIES}" ]; then
+                echo "❌ Push échoué après ${MAX_RETRIES} tentatives."
+                exit 1
+              fi
+              echo "⚠️ Push échoué (tentative ${ATTEMPT}/${MAX_RETRIES}), retry dans 10s..."
+              sleep 10
+            done
+          }
+          # Push séquentiel pour éviter les conflits de layers sur Nexus
+          docker_push_with_retry "${{ env.FRONT_LOCAL_IMAGE }}"
+          docker_push_with_retry "${{ env.BACK_LOCAL_IMAGE }}"
           echo "SMOKE_IMAGES=${{ env.FRONT_LOCAL_IMAGE }} ${{ env.BACK_LOCAL_IMAGE }}" >> "$GITHUB_ENV"
 
       # ── GITOPS (après push réussi) ──────────────────────────────

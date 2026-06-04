@@ -124,7 +124,7 @@ jobs:
           [ -f "backend/requirements.txt" ] && echo "HAS_PYTHON=true" >> "$GITHUB_ENV" || echo "HAS_PYTHON=false" >> "$GITHUB_ENV"
           [ -f "backend/go.mod"           ] && echo "HAS_GO=true"     >> "$GITHUB_ENV" || echo "HAS_GO=false"     >> "$GITHUB_ENV"
 
-      # ── INSTALL FRONTEND ───────────────────────────────────────
+      # ── INSTALL FRONTEND (with silenced warnings) ───────────────
       - name: Install frontend dependencies
         if: env.HAS_FRONT == 'true'
         run: |
@@ -266,7 +266,7 @@ jobs:
       - name: Docker login
         run: echo "nexus111" | docker login 192.168.1.239:8085 -u admin --password-stdin
 
-      # ── BUILD (BuildKit activé, sans cache distant) ─────────────
+      # ── BUILD (sans cache distant) ─────────────────────────────
       - name: "🐳 Build (mono)"
         if: env.DEPLOY_MODE == 'mono'
         run: |
@@ -364,86 +364,30 @@ jobs:
             echo "✅ OK"
           done
 
-      # ── PUSH avec retry simple (sans cache) ─────────────────────
+      # ── PUSH (simple, sans cache) ──────────────────────────────
       - name: "🐳 Push (mono)"
         if: env.DEPLOY_MODE == 'mono'
         run: |
-          docker_push_with_retry() {
-            local IMAGE="$1"
-            local MAX_RETRIES=3
-            local ATTEMPT=0
-            until docker push "${IMAGE}"; do
-              ATTEMPT=$((ATTEMPT + 1))
-              if [ "${ATTEMPT}" -ge "${MAX_RETRIES}" ]; then
-                echo "❌ Push échoué après ${MAX_RETRIES} tentatives."
-                exit 1
-              fi
-              echo "⚠️ Push échoué (tentative ${ATTEMPT}/${MAX_RETRIES}), retry dans 10s..."
-              sleep 10
-            done
-          }
-          docker_push_with_retry "${{ env.LOCAL_IMAGE }}"
+          docker push "${{ env.LOCAL_IMAGE }}"
           echo "SMOKE_IMAGES=${{ env.LOCAL_IMAGE }}" >> "$GITHUB_ENV"
 
       - name: "🐳 Push (front-only)"
         if: env.DEPLOY_MODE == 'front-only'
         run: |
-          docker_push_with_retry() {
-            local IMAGE="$1"
-            local MAX_RETRIES=3
-            local ATTEMPT=0
-            until docker push "${IMAGE}"; do
-              ATTEMPT=$((ATTEMPT + 1))
-              if [ "${ATTEMPT}" -ge "${MAX_RETRIES}" ]; then
-                echo "❌ Push échoué après ${MAX_RETRIES} tentatives."
-                exit 1
-              fi
-              echo "⚠️ Push échoué (tentative ${ATTEMPT}/${MAX_RETRIES}), retry dans 10s..."
-              sleep 10
-            done
-          }
-          docker_push_with_retry "${{ env.LOCAL_IMAGE }}"
+          docker push "${{ env.LOCAL_IMAGE }}"
           echo "SMOKE_IMAGES=${{ env.LOCAL_IMAGE }}" >> "$GITHUB_ENV"
 
       - name: "🐳 Push (back-only)"
         if: env.DEPLOY_MODE == 'back-only'
         run: |
-          docker_push_with_retry() {
-            local IMAGE="$1"
-            local MAX_RETRIES=3
-            local ATTEMPT=0
-            until docker push "${IMAGE}"; do
-              ATTEMPT=$((ATTEMPT + 1))
-              if [ "${ATTEMPT}" -ge "${MAX_RETRIES}" ]; then
-                echo "❌ Push échoué après ${MAX_RETRIES} tentatives."
-                exit 1
-              fi
-              echo "⚠️ Push échoué (tentative ${ATTEMPT}/${MAX_RETRIES}), retry dans 10s..."
-              sleep 10
-            done
-          }
-          docker_push_with_retry "${{ env.LOCAL_IMAGE }}"
+          docker push "${{ env.LOCAL_IMAGE }}"
           echo "SMOKE_IMAGES=${{ env.LOCAL_IMAGE }}" >> "$GITHUB_ENV"
 
       - name: "🐳 Push (dual)"
         if: env.DEPLOY_MODE == 'dual'
         run: |
-          docker_push_with_retry() {
-            local IMAGE="$1"
-            local MAX_RETRIES=3
-            local ATTEMPT=0
-            until docker push "${IMAGE}"; do
-              ATTEMPT=$((ATTEMPT + 1))
-              if [ "${ATTEMPT}" -ge "${MAX_RETRIES}" ]; then
-                echo "❌ Push échoué après ${MAX_RETRIES} tentatives."
-                exit 1
-              fi
-              echo "⚠️ Push échoué (tentative ${ATTEMPT}/${MAX_RETRIES}), retry dans 10s..."
-              sleep 10
-            done
-          }
-          docker_push_with_retry "${{ env.FRONT_LOCAL_IMAGE }}"
-          docker_push_with_retry "${{ env.BACK_LOCAL_IMAGE }}"
+          docker push "${{ env.FRONT_LOCAL_IMAGE }}"
+          docker push "${{ env.BACK_LOCAL_IMAGE }}"
           echo "SMOKE_IMAGES=${{ env.FRONT_LOCAL_IMAGE }} ${{ env.BACK_LOCAL_IMAGE }}" >> "$GITHUB_ENV"
 
       # ── GITOPS (après push réussi) ──────────────────────────────

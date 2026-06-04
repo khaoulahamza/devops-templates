@@ -124,7 +124,7 @@ jobs:
           [ -f "backend/requirements.txt" ] && echo "HAS_PYTHON=true" >> "$GITHUB_ENV" || echo "HAS_PYTHON=false" >> "$GITHUB_ENV"
           [ -f "backend/go.mod"           ] && echo "HAS_GO=true"     >> "$GITHUB_ENV" || echo "HAS_GO=false"     >> "$GITHUB_ENV"
 
-      # ── INSTALL FRONTEND (silencieux) ──────────────────────────
+      # ── INSTALL FRONTEND ───────────────────────────────────────
       - name: Install frontend dependencies
         if: env.HAS_FRONT == 'true'
         run: |
@@ -266,7 +266,7 @@ jobs:
       - name: Docker login
         run: echo "nexus111" | docker login 192.168.1.239:8085 -u admin --password-stdin
 
-      # ── BUILD (BuildKit activé) ────────────────────────────────
+      # ── BUILD (BuildKit activé, sans cache distant) ─────────────
       - name: "🐳 Build (mono)"
         if: env.DEPLOY_MODE == 'mono'
         run: |
@@ -302,7 +302,7 @@ jobs:
           docker build -f "${{ env.BACK_FILE }}" -t "${BACK_IMAGE}" "${{ env.BACK_CONTEXT }}"
           echo "BACK_LOCAL_IMAGE=${BACK_IMAGE}" >> "$GITHUB_ENV"
 
-      # ── TESTS SUR IMAGE LOCALE ─────────────────────────────────
+      # ── TESTS SUR IMAGE LOCALE (Trivy + Smoke) avant push ────────
       - name: "🔒 Trivy scan (mono)"
         if: env.DEPLOY_MODE == 'mono'
         run: |
@@ -364,7 +364,7 @@ jobs:
             echo "✅ OK"
           done
 
-      # ── PUSH (version originale sans factorisation) ────────────
+      # ── PUSH avec retry simple (sans cache) ─────────────────────
       - name: "🐳 Push (mono)"
         if: env.DEPLOY_MODE == 'mono'
         run: |

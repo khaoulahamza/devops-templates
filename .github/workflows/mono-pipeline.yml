@@ -404,34 +404,108 @@ jobs:
             echo "✅ OK"
           done
 
-      # ── PUSH (seulement si tout est OK) ─────────────────────────
+      # ── PUSH (avec réessai en cas de digest mismatch) ───────────
       - name: "🐳 Push (mono)"
         if: env.DEPLOY_MODE == 'mono'
         run: |
-          docker push "${{ env.LOCAL_IMAGE }}"
+          push_with_retry() {
+            local image="$1"
+            for i in 1 2 3; do
+              echo "Push attempt $i for $image"
+              if docker push --disable-content-trust "$image"; then
+                return 0
+              else
+                echo "Push failed, attempt $i"
+                if [ $i -eq 3 ]; then
+                  echo "Rebuilding without cache..."
+                  docker build --no-cache -t "$image" -f "${{ env.MONO_FILE }}" .
+                  docker push --disable-content-trust "$image" && return 0
+                fi
+                sleep 2
+              fi
+            done
+            return 1
+          }
+          push_with_retry "${{ env.LOCAL_IMAGE }}"
           docker push "${{ env.CACHE_IMAGE }}"
           echo "SMOKE_IMAGES=${{ env.LOCAL_IMAGE }}" >> "$GITHUB_ENV"
 
       - name: "🐳 Push (front-only)"
         if: env.DEPLOY_MODE == 'front-only'
         run: |
-          docker push "${{ env.LOCAL_IMAGE }}"
+          push_with_retry() {
+            local image="$1"
+            for i in 1 2 3; do
+              echo "Push attempt $i for $image"
+              if docker push --disable-content-trust "$image"; then
+                return 0
+              else
+                echo "Push failed, attempt $i"
+                if [ $i -eq 3 ]; then
+                  echo "Rebuilding without cache..."
+                  docker build --no-cache -t "$image" -f "${{ env.FRONT_FILE }}" "${{ env.FRONT_CONTEXT }}"
+                  docker push --disable-content-trust "$image" && return 0
+                fi
+                sleep 2
+              fi
+            done
+            return 1
+          }
+          push_with_retry "${{ env.LOCAL_IMAGE }}"
           docker push "${{ env.CACHE_IMAGE }}"
           echo "SMOKE_IMAGES=${{ env.LOCAL_IMAGE }}" >> "$GITHUB_ENV"
 
       - name: "🐳 Push (back-only)"
         if: env.DEPLOY_MODE == 'back-only'
         run: |
-          docker push "${{ env.LOCAL_IMAGE }}"
+          push_with_retry() {
+            local image="$1"
+            for i in 1 2 3; do
+              echo "Push attempt $i for $image"
+              if docker push --disable-content-trust "$image"; then
+                return 0
+              else
+                echo "Push failed, attempt $i"
+                if [ $i -eq 3 ]; then
+                  echo "Rebuilding without cache..."
+                  docker build --no-cache -t "$image" -f "${{ env.BACK_FILE }}" "${{ env.BACK_CONTEXT }}"
+                  docker push --disable-content-trust "$image" && return 0
+                fi
+                sleep 2
+              fi
+            done
+            return 1
+          }
+          push_with_retry "${{ env.LOCAL_IMAGE }}"
           docker push "${{ env.CACHE_IMAGE }}"
           echo "SMOKE_IMAGES=${{ env.LOCAL_IMAGE }}" >> "$GITHUB_ENV"
 
       - name: "🐳 Push (dual)"
         if: env.DEPLOY_MODE == 'dual'
         run: |
-          docker push "${{ env.FRONT_LOCAL_IMAGE }}"
+          push_with_retry() {
+            local image="$1"
+            local dockerfile="$2"
+            local context="$3"
+            for i in 1 2 3; do
+              echo "Push attempt $i for $image"
+              if docker push --disable-content-trust "$image"; then
+                return 0
+              else
+                echo "Push failed, attempt $i"
+                if [ $i -eq 3 ]; then
+                  echo "Rebuilding without cache..."
+                  docker build --no-cache -t "$image" -f "$dockerfile" "$context"
+                  docker push --disable-content-trust "$image" && return 0
+                fi
+                sleep 2
+              fi
+            done
+            return 1
+          }
+          push_with_retry "${{ env.FRONT_LOCAL_IMAGE }}" "${{ env.FRONT_FILE }}" "${{ env.FRONT_CONTEXT }}"
           docker push "${{ env.FRONT_CACHE_IMAGE }}"
-          docker push "${{ env.BACK_LOCAL_IMAGE }}"
+          push_with_retry "${{ env.BACK_LOCAL_IMAGE }}" "${{ env.BACK_FILE }}" "${{ env.BACK_CONTEXT }}"
           docker push "${{ env.BACK_CACHE_IMAGE }}"
           echo "SMOKE_IMAGES=${{ env.FRONT_LOCAL_IMAGE }} ${{ env.BACK_LOCAL_IMAGE }}" >> "$GITHUB_ENV"
 
@@ -498,14 +572,7 @@ jobs:
           esac
 
           git add .
-          # Si aucun changement, on sort
           git diff --cached --quiet && echo "Rien à commiter." && exit 0
-
-          # Commit local
           git commit -m "${COMMIT_MSG}"
-
-          # Récupérer les éventuelles nouvelles modifications distantes (rebase)
           git pull --rebase origin main
-
-          # Push final
           git push origin main

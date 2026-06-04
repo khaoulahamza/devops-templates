@@ -266,40 +266,40 @@ jobs:
       - name: Docker login
         run: echo "nexus111" | docker login 192.168.1.239:8085 -u admin --password-stdin
 
-      # ── BUILD (sans cache distant) ─────────────────────────────
+      # ── BUILD (BuildKit activé, sans cache distant) ─────────────
       - name: "🐳 Build (mono)"
         if: env.DEPLOY_MODE == 'mono'
         run: |
           IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}:${{ github.sha }}"
-          DOCKER_BUILDKIT=0 docker build -f "${{ env.MONO_FILE }}" -t "${IMAGE}" .
+          docker build -f "${{ env.MONO_FILE }}" -t "${IMAGE}" .
           echo "LOCAL_IMAGE=${IMAGE}" >> "$GITHUB_ENV"
 
       - name: "🐳 Build (front-only)"
         if: env.DEPLOY_MODE == 'front-only'
         run: |
           IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-front:${{ github.sha }}"
-          DOCKER_BUILDKIT=0 docker build -f "${{ env.FRONT_FILE }}" -t "${IMAGE}" "${{ env.FRONT_CONTEXT }}"
+          docker build -f "${{ env.FRONT_FILE }}" -t "${IMAGE}" "${{ env.FRONT_CONTEXT }}"
           echo "LOCAL_IMAGE=${IMAGE}" >> "$GITHUB_ENV"
 
       - name: "🐳 Build (back-only)"
         if: env.DEPLOY_MODE == 'back-only'
         run: |
           IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-back:${{ github.sha }}"
-          DOCKER_BUILDKIT=0 docker build -f "${{ env.BACK_FILE }}" -t "${IMAGE}" "${{ env.BACK_CONTEXT }}"
+          docker build -f "${{ env.BACK_FILE }}" -t "${IMAGE}" "${{ env.BACK_CONTEXT }}"
           echo "LOCAL_IMAGE=${IMAGE}" >> "$GITHUB_ENV"
 
       - name: "🐳 Build frontend (dual)"
         if: env.DEPLOY_MODE == 'dual'
         run: |
           FRONT_IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-front:${{ github.sha }}"
-          DOCKER_BUILDKIT=0 docker build -f "${{ env.FRONT_FILE }}" -t "${FRONT_IMAGE}" "${{ env.FRONT_CONTEXT }}"
+          docker build -f "${{ env.FRONT_FILE }}" -t "${FRONT_IMAGE}" "${{ env.FRONT_CONTEXT }}"
           echo "FRONT_LOCAL_IMAGE=${FRONT_IMAGE}" >> "$GITHUB_ENV"
 
       - name: "🐳 Build backend (dual)"
         if: env.DEPLOY_MODE == 'dual'
         run: |
           BACK_IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-back:${{ github.sha }}"
-          DOCKER_BUILDKIT=0 docker build -f "${{ env.BACK_FILE }}" -t "${BACK_IMAGE}" "${{ env.BACK_CONTEXT }}"
+          docker build -f "${{ env.BACK_FILE }}" -t "${BACK_IMAGE}" "${{ env.BACK_CONTEXT }}"
           echo "BACK_LOCAL_IMAGE=${BACK_IMAGE}" >> "$GITHUB_ENV"
 
       # ── TESTS SUR IMAGE LOCALE (Trivy + Smoke) avant push ────────
@@ -364,7 +364,7 @@ jobs:
             echo "✅ OK"
           done
 
-      # ── PUSH avec retry (fix digest mismatch) ──────────────────
+      # ── PUSH avec retry simple (sans cache) ─────────────────────
       - name: "🐳 Push (mono)"
         if: env.DEPLOY_MODE == 'mono'
         run: |
@@ -442,7 +442,6 @@ jobs:
               sleep 10
             done
           }
-          # Push séquentiel pour éviter les conflits de layers sur Nexus
           docker_push_with_retry "${{ env.FRONT_LOCAL_IMAGE }}"
           docker_push_with_retry "${{ env.BACK_LOCAL_IMAGE }}"
           echo "SMOKE_IMAGES=${{ env.FRONT_LOCAL_IMAGE }} ${{ env.BACK_LOCAL_IMAGE }}" >> "$GITHUB_ENV"

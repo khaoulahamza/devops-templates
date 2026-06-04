@@ -27,6 +27,10 @@ jobs:
           --health-retries=5
 
     steps:
+      # ── CLEAN WORKSPACE (fix Docker root-owned files) ──────────
+      - name: Clean workspace
+        run: sudo rm -rf "${{ github.workspace }}"/* "${{ github.workspace }}"/.* 2>/dev/null || true
+
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -41,27 +45,51 @@ jobs:
       # ── DETECT MODE ────────────────────────────────────────────
       - name: Detect deploy mode & frontend location
         run: |
-          HAS_FRONT="false"; HAS_BACK="false"
-          FRONT_FILE=""; FRONT_CONTEXT="."; BACK_FILE=""; BACK_CONTEXT="."; MONO_FILE=""
+          HAS_FRONT="false"
+          HAS_BACK="false"
+          FRONT_FILE=""
+          FRONT_CONTEXT="."
+          BACK_FILE=""
+          BACK_CONTEXT="."
+          MONO_FILE=""
           FRONT_AT_ROOT="false"
 
-          if   [ -f "frontend/Dockerfile"  ]; then HAS_FRONT="true"; FRONT_FILE="frontend/Dockerfile";  FRONT_CONTEXT="frontend"
-          elif [ -f "Dockerfile.frontend"  ]; then HAS_FRONT="true"; FRONT_FILE="Dockerfile.frontend";  FRONT_CONTEXT="."
+          if [ -f "frontend/Dockerfile" ]; then
+            HAS_FRONT="true"
+            FRONT_FILE="frontend/Dockerfile"
+            FRONT_CONTEXT="frontend"
+          elif [ -f "Dockerfile.frontend" ]; then
+            HAS_FRONT="true"
+            FRONT_FILE="Dockerfile.frontend"
+            FRONT_CONTEXT="."
           fi
 
           if [ "${HAS_FRONT}" = "true" ] && [ -f "package.json" ] && [ -f "angular.json" ]; then
             FRONT_AT_ROOT="true"
           fi
 
-          if   [ -f "backend/Dockerfile"   ]; then HAS_BACK="true"; BACK_FILE="backend/Dockerfile";  BACK_CONTEXT="backend"
-          elif [ -f "Dockerfile.backend"   ]; then HAS_BACK="true"; BACK_FILE="Dockerfile.backend";  BACK_CONTEXT="."
+          if [ -f "backend/Dockerfile" ]; then
+            HAS_BACK="true"
+            BACK_FILE="backend/Dockerfile"
+            BACK_CONTEXT="backend"
+          elif [ -f "Dockerfile.backend" ]; then
+            HAS_BACK="true"
+            BACK_FILE="Dockerfile.backend"
+            BACK_CONTEXT="."
           fi
 
-          if   [ "${HAS_FRONT}" = "true" ] && [ "${HAS_BACK}" = "true" ]; then DEPLOY_MODE="dual"
-          elif [ "${HAS_FRONT}" = "true" ];                                 then DEPLOY_MODE="front-only"
-          elif [ "${HAS_BACK}"  = "true" ];                                 then DEPLOY_MODE="back-only"
-          elif [ -f "Dockerfile" ];                                          then DEPLOY_MODE="mono"; MONO_FILE="Dockerfile"
-          else echo "❌ Aucun Dockerfile trouvé."; exit 1
+          if [ "${HAS_FRONT}" = "true" ] && [ "${HAS_BACK}" = "true" ]; then
+            DEPLOY_MODE="dual"
+          elif [ "${HAS_FRONT}" = "true" ]; then
+            DEPLOY_MODE="front-only"
+          elif [ "${HAS_BACK}" = "true" ]; then
+            DEPLOY_MODE="back-only"
+          elif [ -f "Dockerfile" ]; then
+            DEPLOY_MODE="mono"
+            MONO_FILE="Dockerfile"
+          else
+            echo "❌ Aucun Dockerfile trouvé."
+            exit 1
           fi
 
           echo "DEPLOY_MODE=${DEPLOY_MODE}"     >> "$GITHUB_ENV"
@@ -96,11 +124,13 @@ jobs:
         run: |
           if [ "${{ env.FRONT_AT_ROOT }}" = "true" ]; then
             docker run --rm \
+              --user "$(id -u):$(id -g)" \
               -v "$PWD:/app" -w /app \
               192.168.1.239:8085/selfkhaoula/node:20-alpine \
               npm install --legacy-peer-deps
           else
             docker run --rm \
+              --user "$(id -u):$(id -g)" \
               -v "$PWD/frontend:/app" -w /app \
               192.168.1.239:8085/selfkhaoula/node:20-alpine \
               npm install --legacy-peer-deps
@@ -112,12 +142,14 @@ jobs:
         run: |
           if [ "${{ env.FRONT_AT_ROOT }}" = "true" ]; then
             docker run --rm \
+              --user "$(id -u):$(id -g)" \
               -v "$PWD:/app" -w /app \
               --cap-add=SYS_ADMIN \
               192.168.1.239:8085/selfkhaoula/node:20-browsers \
               npm test -- --watch=false --browsers=ChromeHeadlessNoSandbox 2>&1 | tee frontend-test.log
           else
             docker run --rm \
+              --user "$(id -u):$(id -g)" \
               -v "$PWD/frontend:/app" -w /app \
               --cap-add=SYS_ADMIN \
               192.168.1.239:8085/selfkhaoula/node:20-browsers \
@@ -129,18 +161,27 @@ jobs:
         run: |
           docker run --rm \
             --network host \
+            --user "$(id -u):$(id -g)" \
             -v "$PWD/backend:/app" -w /app \
+            -v "$HOME/.m2:/root/.m2" \
             -e MAVEN_OPTS="-Xmx512m" \
             -e SPRING_DATASOURCE_URL="jdbc:postgresql://localhost:5432/testdb" \
             -e SPRING_DATASOURCE_USERNAME="testuser" \
             -e SPRING_DATASOURCE_PASSWORD="testpass" \
             192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
-            mvn test -B -Dspring.profiles.active=test -DskipTests=false
+            mvn test -B -Dspring.profiles.active=test -DskipTests=false \
+          || {
+            echo "=== SUREFIRE FAILURE REPORTS ==="
+            find "$PWD/backend/target/surefire-reports" -name "*.txt" \
+              -exec echo "--- {} ---" \; -exec cat {} \; 2>/dev/null || true
+            exit 1
+          }
 
       - name: "🧪 Test backend (Python)"
         if: env.HAS_PYTHON == 'true'
         run: |
           docker run --rm \
+            --user "$(id -u):$(id -g)" \
             -v "$PWD/backend:/app" -w /app \
             192.168.1.239:8085/selfkhaoula/python:3.11-slim \
             sh -c "pip install -r requirements.txt -q && pytest --tb=short"
@@ -149,6 +190,7 @@ jobs:
         if: env.HAS_GO == 'true'
         run: |
           docker run --rm \
+            --user "$(id -u):$(id -g)" \
             -v "$PWD/backend:/app" -w /app \
             192.168.1.239:8085/selfkhaoula/golang:1.22-alpine \
             go test ./... -v
@@ -159,6 +201,7 @@ jobs:
         run: |
           MOUNT=$( [ "${{ env.FRONT_AT_ROOT }}" = "true" ] && echo "$PWD" || echo "$PWD/frontend" )
           docker run --rm \
+            --user "$(id -u):$(id -g)" \
             -v "${MOUNT}:/app" -w /app \
             192.168.1.239:8085/selfkhaoula/node:20-alpine \
             sh -c "if node -e \"const p=require('./package.json'); process.exit(p.scripts&&p.scripts.lint?0:1);\" 2>/dev/null; then npm run lint; else echo '⚠️ Pas de script lint, ignoré.'; fi"
@@ -168,6 +211,7 @@ jobs:
         run: |
           if grep -qi "checkstyle" backend/pom.xml; then
             docker run --rm \
+              --user "$(id -u):$(id -g)" \
               -v "$PWD/backend:/app" -w /app \
               192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
               mvn checkstyle:check -B
@@ -175,25 +219,24 @@ jobs:
             echo "⚠️ Checkstyle non configuré, ignoré."
           fi
 
-      # ── LINT DOCKERFILES (HADOLINT) – AVEC VALIDATION ──────────
       - name: "🔍 Lint Dockerfiles (hadolint)"
         run: |
           lint_dockerfile() {
             local FILE="$1"
             if [ -z "${FILE}" ] || [ ! -f "${FILE}" ]; then
-              echo "⚠️ Fichier Dockerfile non trouvé: ${FILE}, ignoré."
+              echo "⚠️ Dockerfile non trouvé: ${FILE}, ignoré."
               return 0
             fi
-            # Vérification que le fichier semble être un vrai Dockerfile
             FIRST_LINE=$(head -n1 "${FILE}")
             if [[ ! "$FIRST_LINE" =~ ^FROM[[:space:]] ]]; then
-              echo "❌ Le fichier ${FILE} ne semble pas être un Dockerfile valide (première ligne: '${FIRST_LINE}')."
-              echo "   Contenu des 10 premières lignes :"
+              echo "❌ ${FILE} ne semble pas être un Dockerfile valide (première ligne: '${FIRST_LINE}')."
               head -n10 "${FILE}"
               exit 1
             fi
-            local DIR=$(dirname "${FILE}")
-            local BASE=$(basename "${FILE}")
+            local DIR
+            DIR=$(dirname "${FILE}")
+            local BASE
+            BASE=$(basename "${FILE}")
             docker run --rm \
               -v "${GITHUB_WORKSPACE}/${DIR}:/mnt" \
               192.168.1.239:8085/selfkhaoula/hadolint:latest \
@@ -262,27 +305,27 @@ jobs:
         if: env.DEPLOY_MODE == 'mono'
         run: |
           IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}:${{ github.sha }}"
-          trivy image --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed "$IMAGE"
+          trivy image --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed "${IMAGE}"
 
       - name: "🔒 Trivy scan (front-only)"
         if: env.DEPLOY_MODE == 'front-only'
         run: |
           IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-front:${{ github.sha }}"
-          trivy image --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed "$IMAGE"
+          trivy image --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed "${IMAGE}"
 
       - name: "🔒 Trivy scan (back-only)"
         if: env.DEPLOY_MODE == 'back-only'
         run: |
           IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-back:${{ github.sha }}"
-          trivy image --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed "$IMAGE"
+          trivy image --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed "${IMAGE}"
 
       - name: "🔒 Trivy scan (dual)"
         if: env.DEPLOY_MODE == 'dual'
         run: |
           FRONT_IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-front:${{ github.sha }}"
           BACK_IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-back:${{ github.sha }}"
-          trivy image --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed "$FRONT_IMAGE"
-          trivy image --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed "$BACK_IMAGE"
+          trivy image --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed "${FRONT_IMAGE}"
+          trivy image --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed "${BACK_IMAGE}"
 
       # ── SMOKE TESTS ────────────────────────────────────────────
       - name: "🔥 Smoke tests"
@@ -291,7 +334,8 @@ jobs:
             echo "→ Smoke test : ${IMAGE}"
             CONTAINER_ID=$(docker run -d --rm "${IMAGE}" 2>/dev/null || true)
             if [ -z "${CONTAINER_ID}" ]; then
-              echo "❌ Container non démarré : ${IMAGE}"; exit 1
+              echo "❌ Container non démarré : ${IMAGE}"
+              exit 1
             fi
             sleep 5
             STATUS=$(docker inspect --format='{{.State.Status}}' "${CONTAINER_ID}" 2>/dev/null || echo "gone")
@@ -322,7 +366,7 @@ jobs:
           write_values() {
             local COMP="$1" REPO="$2" TAG="$3"
             local VPATH="environments/staging/${COMP}/values.yaml"
-            mkdir -p "$(dirname ${VPATH})"
+            mkdir -p "$(dirname "${VPATH}")"
             if [ ! -f "${VPATH}" ]; then
               printf 'name: %s\nreplicaCount: 1\nimage:\n  repository: "%s"\n  tag: "%s"\n  pullPolicy: IfNotPresent\nimagePullSecrets:\n  - name: nexus-registry-secret\nservice:\n  type: ClusterIP\n  port: 80\n  targetPort: 80\ningress:\n  enabled: true\n  className: nginx\n  host: %s.staging.local\n  path: /\n  pathType: Prefix\nresources:\n  limits:\n    cpu: 500m\n    memory: 512Mi\n  requests:\n    cpu: 250m\n    memory: 256Mi\nenv: []\n' \
                 "${COMP}" "${REPO}" "${TAG}" "${COMP}" > "${VPATH}"

@@ -13,7 +13,9 @@ jobs:
       mode: ${{ steps.detect.outputs.mode }}
     steps:
       - name: Clean workspace
-        run: sudo rm -rf "${{ github.workspace }}"/* "${{ github.workspace }}"/.* 2>/dev/null || true
+        run: |
+          sudo git clean -ffdx 2>/dev/null || \
+          sudo find "${{ github.workspace }}" -mindepth 1 -delete 2>/dev/null || true
 
       - uses: actions/checkout@v4
 

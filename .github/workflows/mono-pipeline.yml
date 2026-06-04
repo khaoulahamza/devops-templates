@@ -229,9 +229,8 @@ jobs:
               echo "⚠️ Dockerfile non trouvé: ${FILE}, ignoré."
               return 0
             fi
-            FIRST_LINE=$(head -n1 "${FILE}")
-            if [[ ! "$FIRST_LINE" =~ ^FROM[[:space:]] ]]; then
-              echo "❌ ${FILE} ne semble pas être un Dockerfile valide (première ligne: '${FIRST_LINE}')."
+            if ! grep -qP '^FROM\s' "${FILE}"; then
+              echo "❌ ${FILE} ne contient aucune instruction FROM."
               head -n10 "${FILE}"
               exit 1
             fi

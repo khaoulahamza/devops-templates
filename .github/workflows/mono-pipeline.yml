@@ -255,7 +255,7 @@ jobs:
             mono)       lint_dockerfile "${{ env.MONO_FILE }}"  ;;
           esac
 
-      # ── DOCKER LOGIN & BUILD (sans push) ────────────────────────
+      # ── DOCKER LOGIN ───────────────────────────────────────────
       - name: Trust Nexus certificate
         run: |
           sudo mkdir -p /etc/docker/certs.d/192.168.1.239:8085
@@ -266,81 +266,41 @@ jobs:
       - name: Docker login
         run: echo "nexus111" | docker login 192.168.1.239:8085 -u admin --password-stdin
 
-      # ── BUILD (sans push) ───────────────────────────────────────
+      # ── BUILD (sans cache distant) ─────────────────────────────
       - name: "🐳 Build (mono)"
         if: env.DEPLOY_MODE == 'mono'
         run: |
           IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}:${{ github.sha }}"
-          CACHE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}:cache"
-          docker build \
-            --cache-from "${CACHE}" \
-            --build-arg BUILDKIT_INLINE_CACHE=1 \
-            -f "${{ env.MONO_FILE }}" \
-            -t "${IMAGE}" \
-            -t "${CACHE}" \
-            .
+          docker build -f "${{ env.MONO_FILE }}" -t "${IMAGE}" .
           echo "LOCAL_IMAGE=${IMAGE}" >> "$GITHUB_ENV"
-          echo "CACHE_IMAGE=${CACHE}" >> "$GITHUB_ENV"
 
       - name: "🐳 Build (front-only)"
         if: env.DEPLOY_MODE == 'front-only'
         run: |
           IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-front:${{ github.sha }}"
-          CACHE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-front:cache"
-          docker build \
-            --cache-from "${CACHE}" \
-            --build-arg BUILDKIT_INLINE_CACHE=1 \
-            -f "${{ env.FRONT_FILE }}" \
-            -t "${IMAGE}" \
-            -t "${CACHE}" \
-            "${{ env.FRONT_CONTEXT }}"
+          docker build -f "${{ env.FRONT_FILE }}" -t "${IMAGE}" "${{ env.FRONT_CONTEXT }}"
           echo "LOCAL_IMAGE=${IMAGE}" >> "$GITHUB_ENV"
-          echo "CACHE_IMAGE=${CACHE}" >> "$GITHUB_ENV"
 
       - name: "🐳 Build (back-only)"
         if: env.DEPLOY_MODE == 'back-only'
         run: |
           IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-back:${{ github.sha }}"
-          CACHE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-back:cache"
-          docker build \
-            --cache-from "${CACHE}" \
-            --build-arg BUILDKIT_INLINE_CACHE=1 \
-            -f "${{ env.BACK_FILE }}" \
-            -t "${IMAGE}" \
-            -t "${CACHE}" \
-            "${{ env.BACK_CONTEXT }}"
+          docker build -f "${{ env.BACK_FILE }}" -t "${IMAGE}" "${{ env.BACK_CONTEXT }}"
           echo "LOCAL_IMAGE=${IMAGE}" >> "$GITHUB_ENV"
-          echo "CACHE_IMAGE=${CACHE}" >> "$GITHUB_ENV"
 
       - name: "🐳 Build frontend (dual)"
         if: env.DEPLOY_MODE == 'dual'
         run: |
           FRONT_IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-front:${{ github.sha }}"
-          FRONT_CACHE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-front:cache"
-          docker build \
-            --cache-from "${FRONT_CACHE}" \
-            --build-arg BUILDKIT_INLINE_CACHE=1 \
-            -f "${{ env.FRONT_FILE }}" \
-            -t "${FRONT_IMAGE}" \
-            -t "${FRONT_CACHE}" \
-            "${{ env.FRONT_CONTEXT }}"
+          docker build -f "${{ env.FRONT_FILE }}" -t "${FRONT_IMAGE}" "${{ env.FRONT_CONTEXT }}"
           echo "FRONT_LOCAL_IMAGE=${FRONT_IMAGE}" >> "$GITHUB_ENV"
-          echo "FRONT_CACHE_IMAGE=${FRONT_CACHE}" >> "$GITHUB_ENV"
 
       - name: "🐳 Build backend (dual)"
         if: env.DEPLOY_MODE == 'dual'
         run: |
           BACK_IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-back:${{ github.sha }}"
-          BACK_CACHE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-back:cache"
-          docker build \
-            --cache-from "${BACK_CACHE}" \
-            --build-arg BUILDKIT_INLINE_CACHE=1 \
-            -f "${{ env.BACK_FILE }}" \
-            -t "${BACK_IMAGE}" \
-            -t "${BACK_CACHE}" \
-            "${{ env.BACK_CONTEXT }}"
+          docker build -f "${{ env.BACK_FILE }}" -t "${BACK_IMAGE}" "${{ env.BACK_CONTEXT }}"
           echo "BACK_LOCAL_IMAGE=${BACK_IMAGE}" >> "$GITHUB_ENV"
-          echo "BACK_CACHE_IMAGE=${BACK_CACHE}" >> "$GITHUB_ENV"
 
       # ── TESTS SUR IMAGE LOCALE (Trivy + Smoke) avant push ────────
       - name: "🔒 Trivy scan (mono)"
@@ -404,109 +364,30 @@ jobs:
             echo "✅ OK"
           done
 
-      # ── PUSH (avec réessai en cas de digest mismatch) ───────────
+      # ── PUSH (simple, sans cache) ──────────────────────────────
       - name: "🐳 Push (mono)"
         if: env.DEPLOY_MODE == 'mono'
         run: |
-          push_with_retry() {
-            local image="$1"
-            for i in 1 2 3; do
-              echo "Push attempt $i for $image"
-              if docker push --disable-content-trust "$image"; then
-                return 0
-              else
-                echo "Push failed, attempt $i"
-                if [ $i -eq 3 ]; then
-                  echo "Rebuilding without cache..."
-                  docker build --no-cache -t "$image" -f "${{ env.MONO_FILE }}" .
-                  docker push --disable-content-trust "$image" && return 0
-                fi
-                sleep 2
-              fi
-            done
-            return 1
-          }
-          push_with_retry "${{ env.LOCAL_IMAGE }}"
-          docker push "${{ env.CACHE_IMAGE }}"
+          docker push "${{ env.LOCAL_IMAGE }}"
           echo "SMOKE_IMAGES=${{ env.LOCAL_IMAGE }}" >> "$GITHUB_ENV"
 
       - name: "🐳 Push (front-only)"
         if: env.DEPLOY_MODE == 'front-only'
         run: |
-          push_with_retry() {
-            local image="$1"
-            for i in 1 2 3; do
-              echo "Push attempt $i for $image"
-              if docker push --disable-content-trust "$image"; then
-                return 0
-              else
-                echo "Push failed, attempt $i"
-                if [ $i -eq 3 ]; then
-                  echo "Rebuilding without cache..."
-                  docker build --no-cache -t "$image" -f "${{ env.FRONT_FILE }}" "${{ env.FRONT_CONTEXT }}"
-                  docker push --disable-content-trust "$image" && return 0
-                fi
-                sleep 2
-              fi
-            done
-            return 1
-          }
-          push_with_retry "${{ env.LOCAL_IMAGE }}"
-          docker push "${{ env.CACHE_IMAGE }}"
+          docker push "${{ env.LOCAL_IMAGE }}"
           echo "SMOKE_IMAGES=${{ env.LOCAL_IMAGE }}" >> "$GITHUB_ENV"
 
       - name: "🐳 Push (back-only)"
         if: env.DEPLOY_MODE == 'back-only'
         run: |
-          push_with_retry() {
-            local image="$1"
-            for i in 1 2 3; do
-              echo "Push attempt $i for $image"
-              if docker push --disable-content-trust "$image"; then
-                return 0
-              else
-                echo "Push failed, attempt $i"
-                if [ $i -eq 3 ]; then
-                  echo "Rebuilding without cache..."
-                  docker build --no-cache -t "$image" -f "${{ env.BACK_FILE }}" "${{ env.BACK_CONTEXT }}"
-                  docker push --disable-content-trust "$image" && return 0
-                fi
-                sleep 2
-              fi
-            done
-            return 1
-          }
-          push_with_retry "${{ env.LOCAL_IMAGE }}"
-          docker push "${{ env.CACHE_IMAGE }}"
+          docker push "${{ env.LOCAL_IMAGE }}"
           echo "SMOKE_IMAGES=${{ env.LOCAL_IMAGE }}" >> "$GITHUB_ENV"
 
       - name: "🐳 Push (dual)"
         if: env.DEPLOY_MODE == 'dual'
         run: |
-          push_with_retry() {
-            local image="$1"
-            local dockerfile="$2"
-            local context="$3"
-            for i in 1 2 3; do
-              echo "Push attempt $i for $image"
-              if docker push --disable-content-trust "$image"; then
-                return 0
-              else
-                echo "Push failed, attempt $i"
-                if [ $i -eq 3 ]; then
-                  echo "Rebuilding without cache..."
-                  docker build --no-cache -t "$image" -f "$dockerfile" "$context"
-                  docker push --disable-content-trust "$image" && return 0
-                fi
-                sleep 2
-              fi
-            done
-            return 1
-          }
-          push_with_retry "${{ env.FRONT_LOCAL_IMAGE }}" "${{ env.FRONT_FILE }}" "${{ env.FRONT_CONTEXT }}"
-          docker push "${{ env.FRONT_CACHE_IMAGE }}"
-          push_with_retry "${{ env.BACK_LOCAL_IMAGE }}" "${{ env.BACK_FILE }}" "${{ env.BACK_CONTEXT }}"
-          docker push "${{ env.BACK_CACHE_IMAGE }}"
+          docker push "${{ env.FRONT_LOCAL_IMAGE }}"
+          docker push "${{ env.BACK_LOCAL_IMAGE }}"
           echo "SMOKE_IMAGES=${{ env.FRONT_LOCAL_IMAGE }} ${{ env.BACK_LOCAL_IMAGE }}" >> "$GITHUB_ENV"
 
       # ── GITOPS (après push réussi) ──────────────────────────────

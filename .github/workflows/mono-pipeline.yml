@@ -27,9 +27,11 @@ jobs:
           --health-retries=5
 
     steps:
-      # ── CLEAN WORKSPACE (fix Docker root-owned files) ──────────
+      # ── CLEAN WORKSPACE ────────────────────────────────────────
       - name: Clean workspace
-        run: sudo rm -rf "${{ github.workspace }}"/* "${{ github.workspace }}"/.* 2>/dev/null || true
+        run: |
+          sudo git clean -ffdx 2>/dev/null || \
+          sudo find "${{ github.workspace }}" -mindepth 1 -delete 2>/dev/null || true
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -118,7 +120,7 @@ jobs:
           [ -f "backend/requirements.txt" ] && echo "HAS_PYTHON=true" >> "$GITHUB_ENV" || echo "HAS_PYTHON=false" >> "$GITHUB_ENV"
           [ -f "backend/go.mod"           ] && echo "HAS_GO=true"     >> "$GITHUB_ENV" || echo "HAS_GO=false"     >> "$GITHUB_ENV"
 
-      # ── INSTALL FRONTEND (via Docker) ──────────────────────────
+      # ── INSTALL FRONTEND ───────────────────────────────────────
       - name: Install frontend dependencies
         if: env.HAS_FRONT == 'true'
         run: |

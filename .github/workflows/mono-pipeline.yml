@@ -384,6 +384,13 @@ jobs:
         env:
           GITOPS_PAT: ${{ secrets.GITOPS_TOKEN }}
         run: |
+          # GARDE-FOU : Vérifie que le token a bien été transmis
+          if [ -z "${GITOPS_PAT}" ]; then
+            echo "❌ ERREUR CRITIQUE: Le secret GITOPS_TOKEN est vide ou non transmis !"
+            echo "Vérifiez que le workflow appelant utilise bien 'secrets: inherit'."
+            exit 1
+          fi
+
           APP_NAME="${{ env.APP_NAME }}"
           SHA="${{ github.sha }}"
           REGISTRY="192.168.1.239:8085/selfkhaoula"
@@ -393,6 +400,9 @@ jobs:
           cd gitops-environments
           git config user.email "ci@github.com"
           git config user.name "GitHub Actions"
+          
+          # CORRECTION : On définit l'URL du remote pour que git l'utilise nativement pour push/pull
+          git remote set-url origin "${GITOPS_REPO}"
 
           write_values() {
             local COMP="$1" REPO="$2" TAG="$3"
@@ -444,6 +454,7 @@ jobs:
           git add .
           git diff --cached --quiet && echo "Rien à commiter." && exit 0
           git commit -m "${COMMIT_MSG}"
-          # Utilisation explicite de l'URL avec token pour pull et push
-          git pull --rebase "https://x-access-token:${GITOPS_PAT}@github.com/winddevops-org/gitops-environments.git" main
-          git push "https://x-access-token:${GITOPS_PAT}@github.com/winddevops-org/gitops-environments.git" main
+          
+          # CORRECTION : Utilisation de 'origin' qui contient déjà le token
+          git pull --rebase origin main
+          git push origin main

@@ -387,7 +387,7 @@ jobs:
           APP_NAME="${{ env.APP_NAME }}"
           SHA="${{ github.sha }}"
           REGISTRY="192.168.1.239:8085/selfkhaoula"
-          GITOPS_REPO="https://x-access-token:${GITOPS_PAT}@github.com/winddevops-org/gitops-environments.git"
+          GITOPS_REPO="https://${GITOPS_PAT}@github.com/winddevops-org/gitops-environments.git"
 
           git clone "${GITOPS_REPO}" gitops-environments
           cd gitops-environments

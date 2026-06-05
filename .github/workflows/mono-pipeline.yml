@@ -444,5 +444,6 @@ jobs:
           git add .
           git diff --cached --quiet && echo "Rien à commiter." && exit 0
           git commit -m "${COMMIT_MSG}"
-          git pull --rebase origin main
-          git push origin main
+          # Utilisation explicite de l'URL avec token pour pull et push
+          git pull --rebase "https://x-access-token:${GITOPS_PAT}@github.com/winddevops-org/gitops-environments.git" main
+          git push "https://x-access-token:${GITOPS_PAT}@github.com/winddevops-org/gitops-environments.git" main

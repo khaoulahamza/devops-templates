@@ -44,12 +44,10 @@ jobs:
     needs: detect
     if: needs.detect.outputs.mode == 'mono'
     uses: winddevops-org/devops-templates/.github/workflows/mono-pipeline.yml@main
-    secrets:
-      GITOPS_TOKEN: ${{ secrets.GITOPS_TOKEN }}
+    secrets: inherit   # ← transmet tous les secrets du workflow parent, dont GITOPS_TOKEN
 
   micro:
     needs: detect
     if: needs.detect.outputs.mode == 'micro'
     uses: winddevops-org/devops-templates/.github/workflows/micro-pipeline.yml@main
-    secrets:
-      GITOPS_TOKEN: ${{ secrets.GITOPS_TOKEN }}
+    secrets: inherit

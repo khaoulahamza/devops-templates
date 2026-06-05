@@ -124,7 +124,7 @@ jobs:
           [ -f "backend/requirements.txt" ] && echo "HAS_PYTHON=true" >> "$GITHUB_ENV" || echo "HAS_PYTHON=false" >> "$GITHUB_ENV"
           [ -f "backend/go.mod"           ] && echo "HAS_GO=true"     >> "$GITHUB_ENV" || echo "HAS_GO=false"     >> "$GITHUB_ENV"
 
-      # ── INSTALL FRONTEND (with silenced warnings) ───────────────
+      # ── INSTALL FRONTEND ───────────────────────────────────────
       - name: Install frontend dependencies
         if: env.HAS_FRONT == 'true'
         run: |
@@ -142,7 +142,7 @@ jobs:
               npm install --legacy-peer-deps --loglevel=error --no-fund
           fi
 
-      # ── UNIT TESTS & LINT (avant build) ─────────────────────────
+      # ── TESTS ──────────────────────────────────────────────────
       - name: "🧪 Test frontend (Angular)"
         if: env.HAS_FRONT == 'true'
         run: |
@@ -201,6 +201,7 @@ jobs:
             192.168.1.239:8085/selfkhaoula/golang:1.22-alpine \
             go test ./... -v
 
+      # ── LINT ───────────────────────────────────────────────────
       - name: "🔍 Lint frontend (ESLint)"
         if: env.HAS_FRONT == 'true'
         run: |
@@ -237,10 +238,8 @@ jobs:
               head -n10 "${FILE}"
               exit 1
             fi
-            local DIR
-            DIR=$(dirname "${FILE}")
-            local BASE
-            BASE=$(basename "${FILE}")
+            local DIR; DIR=$(dirname "${FILE}")
+            local BASE; BASE=$(basename "${FILE}")
             echo "→ Lint: ${FILE}"
             docker run --rm \
               -v "${GITHUB_WORKSPACE}/${DIR}:/mnt" \
@@ -266,7 +265,7 @@ jobs:
       - name: Docker login
         run: echo "nexus111" | docker login 192.168.1.239:8085 -u admin --password-stdin
 
-      # ── BUILD (sans cache distant) ─────────────────────────────
+      # ── BUILD ──────────────────────────────────────────────────
       - name: "🐳 Build (mono)"
         if: env.DEPLOY_MODE == 'mono'
         run: |
@@ -302,21 +301,18 @@ jobs:
           docker build -f "${{ env.BACK_FILE }}" -t "${BACK_IMAGE}" "${{ env.BACK_CONTEXT }}"
           echo "BACK_LOCAL_IMAGE=${BACK_IMAGE}" >> "$GITHUB_ENV"
 
-      # ── TESTS SUR IMAGE LOCALE (Trivy + Smoke) avant push ────────
+      # ── TRIVY + SMOKE ──────────────────────────────────────────
       - name: "🔒 Trivy scan (mono)"
         if: env.DEPLOY_MODE == 'mono'
-        run: |
-          trivy image --severity HIGH,CRITICAL --exit-code 0 --ignore-unfixed "${{ env.LOCAL_IMAGE }}"
+        run: trivy image --severity HIGH,CRITICAL --exit-code 0 --ignore-unfixed "${{ env.LOCAL_IMAGE }}"
 
       - name: "🔒 Trivy scan (front-only)"
         if: env.DEPLOY_MODE == 'front-only'
-        run: |
-          trivy image --severity HIGH,CRITICAL --exit-code 0 --ignore-unfixed "${{ env.LOCAL_IMAGE }}"
+        run: trivy image --severity HIGH,CRITICAL --exit-code 0 --ignore-unfixed "${{ env.LOCAL_IMAGE }}"
 
       - name: "🔒 Trivy scan (back-only)"
         if: env.DEPLOY_MODE == 'back-only'
-        run: |
-          trivy image --severity HIGH,CRITICAL --exit-code 0 --ignore-unfixed "${{ env.LOCAL_IMAGE }}"
+        run: trivy image --severity HIGH,CRITICAL --exit-code 0 --ignore-unfixed "${{ env.LOCAL_IMAGE }}"
 
       - name: "🔒 Trivy scan (dual)"
         if: env.DEPLOY_MODE == 'dual'
@@ -364,33 +360,26 @@ jobs:
             echo "✅ OK"
           done
 
-      # ── PUSH (simple, sans cache) ──────────────────────────────
+      # ── PUSH ───────────────────────────────────────────────────
       - name: "🐳 Push (mono)"
         if: env.DEPLOY_MODE == 'mono'
-        run: |
-          docker push "${{ env.LOCAL_IMAGE }}"
-          echo "SMOKE_IMAGES=${{ env.LOCAL_IMAGE }}" >> "$GITHUB_ENV"
+        run: docker push "${{ env.LOCAL_IMAGE }}"
 
       - name: "🐳 Push (front-only)"
         if: env.DEPLOY_MODE == 'front-only'
-        run: |
-          docker push "${{ env.LOCAL_IMAGE }}"
-          echo "SMOKE_IMAGES=${{ env.LOCAL_IMAGE }}" >> "$GITHUB_ENV"
+        run: docker push "${{ env.LOCAL_IMAGE }}"
 
       - name: "🐳 Push (back-only)"
         if: env.DEPLOY_MODE == 'back-only'
-        run: |
-          docker push "${{ env.LOCAL_IMAGE }}"
-          echo "SMOKE_IMAGES=${{ env.LOCAL_IMAGE }}" >> "$GITHUB_ENV"
+        run: docker push "${{ env.LOCAL_IMAGE }}"
 
       - name: "🐳 Push (dual)"
         if: env.DEPLOY_MODE == 'dual'
         run: |
           docker push "${{ env.FRONT_LOCAL_IMAGE }}"
           docker push "${{ env.BACK_LOCAL_IMAGE }}"
-          echo "SMOKE_IMAGES=${{ env.FRONT_LOCAL_IMAGE }} ${{ env.BACK_LOCAL_IMAGE }}" >> "$GITHUB_ENV"
 
-      # ── GITOPS (après push réussi) ──────────────────────────────
+      # ── GITOPS ─────────────────────────────────────────────────
       - name: "🚀 Update GitOps"
         env:
           GITOPS_PAT: ${{ secrets.GITOPS_TOKEN }}
@@ -398,7 +387,7 @@ jobs:
           APP_NAME="${{ env.APP_NAME }}"
           SHA="${{ github.sha }}"
           REGISTRY="192.168.1.239:8085/selfkhaoula"
-          GITOPS_REPO="https://x-access-token:${GITOPS_PAT}@github.com/khaoulahamza/gitops-environments.git"
+          GITOPS_REPO="https://x-access-token:${GITOPS_PAT}@github.com/winddevops-org/gitops-environments.git"
 
           git clone "${GITOPS_REPO}" gitops-environments
           cd gitops-environments
@@ -423,7 +412,7 @@ jobs:
             local APATH="argocd-applications/${COMP}.yaml"
             mkdir -p argocd-applications
             [ -f "${APATH}" ] && return 0
-            printf 'apiVersion: argoproj.io/v1alpha1\nkind: Application\nmetadata:\n  name: %s\n  namespace: argocd\nspec:\n  project: stagiaires\n  sources:\n    - repoURL: https://github.com/khaoulahamza/devops-templates\n      targetRevision: main\n      path: helm-charts/app-generic\n      helm:\n        valueFiles:\n          - $values/environments/staging/%s/values.yaml\n    - repoURL: https://github.com/khaoulahamza/gitops-environments\n      targetRevision: main\n      ref: values\n  destination:\n    server: https://kubernetes.default.svc\n    namespace: staging-%s\n  syncPolicy:\n    automated:\n      prune: true\n      selfHeal: true\n    syncOptions:\n      - CreateNamespace=true\n' \
+            printf 'apiVersion: argoproj.io/v1alpha1\nkind: Application\nmetadata:\n  name: %s\n  namespace: argocd\nspec:\n  project: stagiaires\n  sources:\n    - repoURL: https://github.com/winddevops-org/devops-templates\n      targetRevision: main\n      path: helm-charts/app-generic\n      helm:\n        valueFiles:\n          - $values/environments/staging/%s/values.yaml\n    - repoURL: https://github.com/winddevops-org/gitops-environments\n      targetRevision: main\n      ref: values\n  destination:\n    server: https://kubernetes.default.svc\n    namespace: staging-%s\n  syncPolicy:\n    automated:\n      prune: true\n      selfHeal: true\n    syncOptions:\n      - CreateNamespace=true\n' \
               "${COMP}" "${COMP}" "${COMP}" > "${APATH}"
           }
 

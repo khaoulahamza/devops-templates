@@ -121,14 +121,10 @@ jobs:
             [ -z "${JAVA_VERSION}" ] && JAVA_VERSION="17"
             echo "JAVA_VERSION=${JAVA_VERSION}" >> "$GITHUB_ENV"
             
-            if grep -q "postgresql" backend/pom.xml; then
-              DB_TYPE="postgresql"
-            elif grep -q "mysql-connector" backend/pom.xml; then
-              DB_TYPE="mysql"
-            elif grep -q "mongodb-driver" backend/pom.xml || grep -q "mongo-java-driver" backend/pom.xml; then
-              DB_TYPE="mongodb"
-            elif grep -q "h2" backend/pom.xml; then
-              DB_TYPE="h2"
+            if grep -q "postgresql" backend/pom.xml; then DB_TYPE="postgresql"
+            elif grep -q "mysql-connector" backend/pom.xml; then DB_TYPE="mysql"
+            elif grep -q "mongodb-driver" backend/pom.xml || grep -q "mongo-java-driver" backend/pom.xml; then DB_TYPE="mongodb"
+            elif grep -q "h2" backend/pom.xml; then DB_TYPE="h2"
             fi
           else
             echo "HAS_MAVEN=false" >> "$GITHUB_ENV"
@@ -164,9 +160,61 @@ jobs:
           echo "DB_TYPE=${DB_TYPE}" >> "$GITHUB_ENV"
           echo "✅ Database detected: ${DB_TYPE}"
 
+      # ── DOCKER LOGIN (avant le check) ──────────────────────────
+      - name: Trust Nexus certificate
+        run: |
+          sudo mkdir -p /etc/docker/certs.d/192.168.1.239:8085
+          sudo cp /home/ubuntu/nexus/certs/nexus.crt /etc/docker/certs.d/192.168.1.239:8085/ca.crt
+          sudo cp /home/ubuntu/nexus/certs/nexus.crt /usr/local/share/ca-certificates/nexus.crt
+          sudo update-ca-certificates
+
+      - name: Docker login
+        run: echo "nexus111" | docker login 192.168.1.239:8085 -u admin --password-stdin
+
+      # ── SKIP INTELLIGENT : Vérifier si l'image existe déjà ─────
+      - name: "🔍 Vérifier si l'image existe déjà dans Nexus"
+        id: check_image
+        run: |
+          SKIP="false"
+          
+          if [ "${{ env.DEPLOY_MODE }}" = "dual" ]; then
+            IMG_F="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-front:${{ github.sha }}"
+            IMG_B="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-back:${{ github.sha }}"
+            if docker manifest inspect "$IMG_F" >/dev/null 2>&1 && docker manifest inspect "$IMG_B" >/dev/null 2>&1; then
+              SKIP="true"
+              echo "FRONT_LOCAL_IMAGE=${IMG_F}" >> "$GITHUB_ENV"
+              echo "BACK_LOCAL_IMAGE=${IMG_B}" >> "$GITHUB_ENV"
+            fi
+          elif [ "${{ env.DEPLOY_MODE }}" = "back-only" ]; then
+            IMG="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-back:${{ github.sha }}"
+            if docker manifest inspect "$IMG" >/dev/null 2>&1; then
+              SKIP="true"
+              echo "LOCAL_IMAGE=${IMG}" >> "$GITHUB_ENV"
+            fi
+          elif [ "${{ env.DEPLOY_MODE }}" = "front-only" ]; then
+            IMG="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-front:${{ github.sha }}"
+            if docker manifest inspect "$IMG" >/dev/null 2>&1; then
+              SKIP="true"
+              echo "LOCAL_IMAGE=${IMG}" >> "$GITHUB_ENV"
+            fi
+          else
+            IMG="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}:${{ github.sha }}"
+            if docker manifest inspect "$IMG" >/dev/null 2>&1; then
+              SKIP="true"
+              echo "LOCAL_IMAGE=${IMG}" >> "$GITHUB_ENV"
+            fi
+          fi
+          
+          echo "SKIP_BUILD=${SKIP}" >> $GITHUB_ENV
+          if [ "$SKIP" = "true" ]; then
+            echo "✅ Image(s) déjà présente(s) pour ce commit. Skip Build & Push."
+          else
+            echo "🚀 Image non trouvée. Procédure de Build & Push lancée."
+          fi
+
       # ── INSTALL FRONTEND ───────────────────────────────────────
       - name: Install frontend dependencies
-        if: env.HAS_FRONT == 'true'
+        if: env.HAS_FRONT == 'true' && env.SKIP_BUILD != 'true'
         run: |
           if [ "${{ env.FRONT_AT_ROOT }}" = "true" ]; then
             docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/app" -w /app \
@@ -180,7 +228,7 @@ jobs:
 
       # ── TESTS ──────────────────────────────────────────────────
       - name: "🧪 Test frontend (Angular)"
-        if: env.HAS_FRONT == 'true'
+        if: env.HAS_FRONT == 'true' && env.SKIP_BUILD != 'true'
         run: |
           if [ "${{ env.FRONT_AT_ROOT }}" = "true" ]; then
             docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/app" -w /app --cap-add=SYS_ADMIN \
@@ -193,7 +241,7 @@ jobs:
           fi
 
       - name: "🧪 Test backend (Java/Maven)"
-        if: env.HAS_MAVEN == 'true'
+        if: env.HAS_MAVEN == 'true' && env.SKIP_BUILD != 'true'
         run: |
           docker run --rm --network host --user "$(id -u):$(id -g)" \
             -v "$PWD/backend:/app" -w /app -v "$HOME/.m2:/root/.m2" \
@@ -210,14 +258,14 @@ jobs:
           }
 
       - name: "🧪 Test backend (Python)"
-        if: env.HAS_PYTHON == 'true'
+        if: env.HAS_PYTHON == 'true' && env.SKIP_BUILD != 'true'
         run: |
           docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/backend:/app" -w /app \
             192.168.1.239:8085/selfkhaoula/python:3.11-slim \
             sh -c "pip install -r requirements.txt -q && pytest --tb=short"
 
       - name: "🧪 Test backend (Go)"
-        if: env.HAS_GO == 'true'
+        if: env.HAS_GO == 'true' && env.SKIP_BUILD != 'true'
         run: |
           docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/backend:/app" -w /app \
             192.168.1.239:8085/selfkhaoula/golang:1.22-alpine \
@@ -225,7 +273,7 @@ jobs:
 
       # ── LINT ───────────────────────────────────────────────────
       - name: "🔍 Lint frontend (ESLint)"
-        if: env.HAS_FRONT == 'true'
+        if: env.HAS_FRONT == 'true' && env.SKIP_BUILD != 'true'
         run: |
           MOUNT=$( [ "${{ env.FRONT_AT_ROOT }}" = "true" ] && echo "$PWD" || echo "$PWD/frontend" )
           docker run --rm --user "$(id -u):$(id -g)" -v "${MOUNT}:/app" -w /app \
@@ -233,7 +281,7 @@ jobs:
             sh -c "if node -e \"const p=require('./package.json'); process.exit(p.scripts&&p.scripts.lint?0:1);\" 2>/dev/null; then npm run lint; else echo '⚠️ Pas de script lint, ignoré.'; fi"
 
       - name: "🔍 Lint backend (Checkstyle)"
-        if: env.HAS_MAVEN == 'true'
+        if: env.HAS_MAVEN == 'true' && env.SKIP_BUILD != 'true'
         run: |
           if grep -qi "checkstyle" backend/pom.xml; then
             docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/backend:/app" -w /app \
@@ -244,6 +292,7 @@ jobs:
           fi
 
       - name: "🔍 Lint Dockerfiles (hadolint)"
+        if: env.SKIP_BUILD != 'true'
         run: |
           lint_dockerfile() {
             local FILE="$1"
@@ -271,48 +320,37 @@ jobs:
             mono)       lint_dockerfile "${{ env.MONO_FILE }}"  ;;
           esac
 
-      # ── DOCKER LOGIN ───────────────────────────────────────────
-      - name: Trust Nexus certificate
-        run: |
-          sudo mkdir -p /etc/docker/certs.d/192.168.1.239:8085
-          sudo cp /home/ubuntu/nexus/certs/nexus.crt /etc/docker/certs.d/192.168.1.239:8085/ca.crt
-          sudo cp /home/ubuntu/nexus/certs/nexus.crt /usr/local/share/ca-certificates/nexus.crt
-          sudo update-ca-certificates
-
-      - name: Docker login
-        run: echo "nexus111" | docker login 192.168.1.239:8085 -u admin --password-stdin
-
       # ── BUILD ──────────────────────────────────────────────────
       - name: "🐳 Build (mono)"
-        if: env.DEPLOY_MODE == 'mono'
+        if: env.DEPLOY_MODE == 'mono' && env.SKIP_BUILD != 'true'
         run: |
           IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}:${{ github.sha }}"
           docker build -f "${{ env.MONO_FILE }}" -t "${IMAGE}" .
           echo "LOCAL_IMAGE=${IMAGE}" >> "$GITHUB_ENV"
 
       - name: "🐳 Build (front-only)"
-        if: env.DEPLOY_MODE == 'front-only'
+        if: env.DEPLOY_MODE == 'front-only' && env.SKIP_BUILD != 'true'
         run: |
           IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-front:${{ github.sha }}"
           docker build -f "${{ env.FRONT_FILE }}" -t "${IMAGE}" "${{ env.FRONT_CONTEXT }}"
           echo "LOCAL_IMAGE=${IMAGE}" >> "$GITHUB_ENV"
 
       - name: "🐳 Build (back-only)"
-        if: env.DEPLOY_MODE == 'back-only'
+        if: env.DEPLOY_MODE == 'back-only' && env.SKIP_BUILD != 'true'
         run: |
           IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-back:${{ github.sha }}"
           docker build -f "${{ env.BACK_FILE }}" -t "${IMAGE}" "${{ env.BACK_CONTEXT }}"
           echo "LOCAL_IMAGE=${IMAGE}" >> "$GITHUB_ENV"
 
       - name: "🐳 Build frontend (dual)"
-        if: env.DEPLOY_MODE == 'dual'
+        if: env.DEPLOY_MODE == 'dual' && env.SKIP_BUILD != 'true'
         run: |
           FRONT_IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-front:${{ github.sha }}"
           docker build -f "${{ env.FRONT_FILE }}" -t "${FRONT_IMAGE}" "${{ env.FRONT_CONTEXT }}"
           echo "FRONT_LOCAL_IMAGE=${FRONT_IMAGE}" >> "$GITHUB_ENV"
 
       - name: "🐳 Build backend (dual)"
-        if: env.DEPLOY_MODE == 'dual'
+        if: env.DEPLOY_MODE == 'dual' && env.SKIP_BUILD != 'true'
         run: |
           BACK_IMAGE="192.168.1.239:8085/selfkhaoula/${{ env.APP_NAME }}-back:${{ github.sha }}"
           docker build -f "${{ env.BACK_FILE }}" -t "${BACK_IMAGE}" "${{ env.BACK_CONTEXT }}"
@@ -320,25 +358,25 @@ jobs:
 
       # ── TRIVY + SMOKE ──────────────────────────────────────────
       - name: "🔒 Trivy scan (mono)"
-        if: env.DEPLOY_MODE == 'mono'
+        if: env.DEPLOY_MODE == 'mono' && env.SKIP_BUILD != 'true'
         run: trivy image --severity HIGH,CRITICAL --exit-code 0 --ignore-unfixed "${{ env.LOCAL_IMAGE }}"
 
       - name: "🔒 Trivy scan (front-only)"
-        if: env.DEPLOY_MODE == 'front-only'
+        if: env.DEPLOY_MODE == 'front-only' && env.SKIP_BUILD != 'true'
         run: trivy image --severity HIGH,CRITICAL --exit-code 0 --ignore-unfixed "${{ env.LOCAL_IMAGE }}"
 
       - name: "🔒 Trivy scan (back-only)"
-        if: env.DEPLOY_MODE == 'back-only'
+        if: env.DEPLOY_MODE == 'back-only' && env.SKIP_BUILD != 'true'
         run: trivy image --severity HIGH,CRITICAL --exit-code 0 --ignore-unfixed "${{ env.LOCAL_IMAGE }}"
 
       - name: "🔒 Trivy scan (dual)"
-        if: env.DEPLOY_MODE == 'dual'
+        if: env.DEPLOY_MODE == 'dual' && env.SKIP_BUILD != 'true'
         run: |
           trivy image --severity HIGH,CRITICAL --exit-code 0 --ignore-unfixed "${{ env.FRONT_LOCAL_IMAGE }}"
           trivy image --severity HIGH,CRITICAL --exit-code 0 --ignore-unfixed "${{ env.BACK_LOCAL_IMAGE }}"
 
       - name: "🔥 Smoke tests (mono/front/back)"
-        if: env.DEPLOY_MODE != 'dual'
+        if: env.DEPLOY_MODE != 'dual' && env.SKIP_BUILD != 'true'
         run: |
           echo "→ Smoke test : ${{ env.LOCAL_IMAGE }}"
           CONTAINER_ID=$(docker run -d --rm "${{ env.LOCAL_IMAGE }}" 2>/dev/null || true)
@@ -354,7 +392,7 @@ jobs:
           echo "✅ OK"
 
       - name: "🔥 Smoke tests (dual)"
-        if: env.DEPLOY_MODE == 'dual'
+        if: env.DEPLOY_MODE == 'dual' && env.SKIP_BUILD != 'true'
         run: |
           for IMAGE in "${{ env.FRONT_LOCAL_IMAGE }}" "${{ env.BACK_LOCAL_IMAGE }}"; do
             echo "→ Smoke test : ${IMAGE}"
@@ -373,19 +411,19 @@ jobs:
 
       # ── PUSH ───────────────────────────────────────────────────
       - name: "🐳 Push (mono)"
-        if: env.DEPLOY_MODE == 'mono'
+        if: env.DEPLOY_MODE == 'mono' && env.SKIP_BUILD != 'true'
         run: docker push "${{ env.LOCAL_IMAGE }}"
 
       - name: "🐳 Push (front-only)"
-        if: env.DEPLOY_MODE == 'front-only'
+        if: env.DEPLOY_MODE == 'front-only' && env.SKIP_BUILD != 'true'
         run: docker push "${{ env.LOCAL_IMAGE }}"
 
       - name: "🐳 Push (back-only)"
-        if: env.DEPLOY_MODE == 'back-only'
+        if: env.DEPLOY_MODE == 'back-only' && env.SKIP_BUILD != 'true'
         run: docker push "${{ env.LOCAL_IMAGE }}"
 
       - name: "🐳 Push (dual)"
-        if: env.DEPLOY_MODE == 'dual'
+        if: env.DEPLOY_MODE == 'dual' && env.SKIP_BUILD != 'true'
         run: |
           docker push "${{ env.FRONT_LOCAL_IMAGE }}"
           docker push "${{ env.BACK_LOCAL_IMAGE }}"
@@ -443,219 +481,221 @@ jobs:
               return 0
             fi
             
-            [ -f "${DBPATH}" ] && echo "⚠️ Base de données déjà existante, ignorée." && return 0
+            if [ -f "${DBPATH}" ]; then
+              echo "⚠️ Base de données déjà existante, ignorée."
+              return 0
+            fi
+            
             mkdir -p "$(dirname "${DBPATH}")"
             
             if [ "${DB_TYPE}" = "postgresql" ]; then
-cat > "${DBPATH}" <<EOF
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: postgres-service-${COMP}
-  namespace: staging-${COMP}
-spec:
-  selector:
-    app: postgres-db-${COMP}
-  ports:
-    - port: 5432
-      targetPort: 5432
-  clusterIP: None
----
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: postgres-db-${COMP}
-  namespace: staging-${COMP}
-spec:
-  serviceName: "postgres-service-${COMP}"
-  replicas: 1
-  selector:
-    matchLabels:
-      app: postgres-db-${COMP}
-  template:
-    metadata:
-      labels:
-        app: postgres-db-${COMP}
-    spec:
-      containers:
-        - name: postgres
-          image: postgres:15-alpine
-          ports:
-            - containerPort: 5432
-          env:
-            - name: POSTGRES_DB
-              value: "${COMP//-/_}_db"
-            - name: POSTGRES_USER
-              value: "admin"
-            - name: POSTGRES_PASSWORD
-              value: "changeme123"
-            - name: PGDATA
-              value: "/var/lib/postgresql/data/pgdata"
-          volumeMounts:
-            - name: postgres-storage
-              mountPath: /var/lib/postgresql/data
-          resources:
-            requests:
-              memory: "256Mi"
-              cpu: "250m"
-            limits:
-              memory: "512Mi"
-              cpu: "500m"
-          readinessProbe:
-            exec:
-              command: ["pg_isready", "-U", "admin"]
-            initialDelaySeconds: 10
-            periodSeconds: 5
-  volumeClaimTemplates:
-    - metadata:
-        name: postgres-storage
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        resources:
-          requests:
-            storage: 1Gi
-EOF
+              echo "---" > "${DBPATH}"
+              echo "apiVersion: v1" >> "${DBPATH}"
+              echo "kind: Service" >> "${DBPATH}"
+              echo "metadata:" >> "${DBPATH}"
+              echo "  name: postgres-service-${COMP}" >> "${DBPATH}"
+              echo "  namespace: staging-${COMP}" >> "${DBPATH}"
+              echo "spec:" >> "${DBPATH}"
+              echo "  selector:" >> "${DBPATH}"
+              echo "    app: postgres-db-${COMP}" >> "${DBPATH}"
+              echo "  ports:" >> "${DBPATH}"
+              echo "    - port: 5432" >> "${DBPATH}"
+              echo "      targetPort: 5432" >> "${DBPATH}"
+              echo "  clusterIP: None" >> "${DBPATH}"
+              echo "---" >> "${DBPATH}"
+              echo "apiVersion: apps/v1" >> "${DBPATH}"
+              echo "kind: StatefulSet" >> "${DBPATH}"
+              echo "metadata:" >> "${DBPATH}"
+              echo "  name: postgres-db-${COMP}" >> "${DBPATH}"
+              echo "  namespace: staging-${COMP}" >> "${DBPATH}"
+              echo "spec:" >> "${DBPATH}"
+              echo "  serviceName: postgres-service-${COMP}" >> "${DBPATH}"
+              echo "  replicas: 1" >> "${DBPATH}"
+              echo "  selector:" >> "${DBPATH}"
+              echo "    matchLabels:" >> "${DBPATH}"
+              echo "      app: postgres-db-${COMP}" >> "${DBPATH}"
+              echo "  template:" >> "${DBPATH}"
+              echo "    metadata:" >> "${DBPATH}"
+              echo "      labels:" >> "${DBPATH}"
+              echo "        app: postgres-db-${COMP}" >> "${DBPATH}"
+              echo "    spec:" >> "${DBPATH}"
+              echo "      containers:" >> "${DBPATH}"
+              echo "        - name: postgres" >> "${DBPATH}"
+              echo "          image: postgres:15-alpine" >> "${DBPATH}"
+              echo "          ports:" >> "${DBPATH}"
+              echo "            - containerPort: 5432" >> "${DBPATH}"
+              echo "          env:" >> "${DBPATH}"
+              echo "            - name: POSTGRES_DB" >> "${DBPATH}"
+              echo "              value: \"${COMP//-/_}_db\"" >> "${DBPATH}"
+              echo "            - name: POSTGRES_USER" >> "${DBPATH}"
+              echo "              value: \"admin\"" >> "${DBPATH}"
+              echo "            - name: POSTGRES_PASSWORD" >> "${DBPATH}"
+              echo "              value: \"changeme123\"" >> "${DBPATH}"
+              echo "            - name: PGDATA" >> "${DBPATH}"
+              echo "              value: \"/var/lib/postgresql/data/pgdata\"" >> "${DBPATH}"
+              echo "          volumeMounts:" >> "${DBPATH}"
+              echo "            - name: postgres-storage" >> "${DBPATH}"
+              echo "              mountPath: /var/lib/postgresql/data" >> "${DBPATH}"
+              echo "          resources:" >> "${DBPATH}"
+              echo "            requests:" >> "${DBPATH}"
+              echo "              memory: \"256Mi\"" >> "${DBPATH}"
+              echo "              cpu: \"250m\"" >> "${DBPATH}"
+              echo "            limits:" >> "${DBPATH}"
+              echo "              memory: \"512Mi\"" >> "${DBPATH}"
+              echo "              cpu: \"500m\"" >> "${DBPATH}"
+              echo "          readinessProbe:" >> "${DBPATH}"
+              echo "            exec:" >> "${DBPATH}"
+              echo "              command: [\"pg_isready\", \"-U\", \"admin\"]" >> "${DBPATH}"
+              echo "            initialDelaySeconds: 10" >> "${DBPATH}"
+              echo "            periodSeconds: 5" >> "${DBPATH}"
+              echo "  volumeClaimTemplates:" >> "${DBPATH}"
+              echo "    - metadata:" >> "${DBPATH}"
+              echo "        name: postgres-storage" >> "${DBPATH}"
+              echo "      spec:" >> "${DBPATH}"
+              echo "        accessModes: [\"ReadWriteOnce\"]" >> "${DBPATH}"
+              echo "        resources:" >> "${DBPATH}"
+              echo "          requests:" >> "${DBPATH}"
+              echo "            storage: 1Gi" >> "${DBPATH}"
+              echo "✅ PostgreSQL généré pour ${COMP}"
+              
             elif [ "${DB_TYPE}" = "mysql" ]; then
-cat > "${DBPATH}" <<EOF
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: mysql-service-${COMP}
-  namespace: staging-${COMP}
-spec:
-  selector:
-    app: mysql-db-${COMP}
-  ports:
-    - port: 3306
-      targetPort: 3306
-  clusterIP: None
----
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: mysql-db-${COMP}
-  namespace: staging-${COMP}
-spec:
-  serviceName: "mysql-service-${COMP}"
-  replicas: 1
-  selector:
-    matchLabels:
-      app: mysql-db-${COMP}
-  template:
-    metadata:
-      labels:
-        app: mysql-db-${COMP}
-    spec:
-      containers:
-        - name: mysql
-          image: mysql:8.0
-          ports:
-            - containerPort: 3306
-          env:
-            - name: MYSQL_DATABASE
-              value: "${COMP//-/_}_db"
-            - name: MYSQL_USER
-              value: "admin"
-            - name: MYSQL_PASSWORD
-              value: "changeme123"
-            - name: MYSQL_ROOT_PASSWORD
-              value: "rootpassword123"
-          volumeMounts:
-            - name: mysql-storage
-              mountPath: /var/lib/mysql
-          resources:
-            requests:
-              memory: "256Mi"
-              cpu: "250m"
-            limits:
-              memory: "512Mi"
-              cpu: "500m"
-          readinessProbe:
-            exec:
-              command: ["mysqladmin", "ping", "-h", "localhost"]
-            initialDelaySeconds: 15
-            periodSeconds: 5
-  volumeClaimTemplates:
-    - metadata:
-        name: mysql-storage
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        resources:
-          requests:
-            storage: 1Gi
-EOF
+              echo "---" > "${DBPATH}"
+              echo "apiVersion: v1" >> "${DBPATH}"
+              echo "kind: Service" >> "${DBPATH}"
+              echo "metadata:" >> "${DBPATH}"
+              echo "  name: mysql-service-${COMP}" >> "${DBPATH}"
+              echo "  namespace: staging-${COMP}" >> "${DBPATH}"
+              echo "spec:" >> "${DBPATH}"
+              echo "  selector:" >> "${DBPATH}"
+              echo "    app: mysql-db-${COMP}" >> "${DBPATH}"
+              echo "  ports:" >> "${DBPATH}"
+              echo "    - port: 3306" >> "${DBPATH}"
+              echo "      targetPort: 3306" >> "${DBPATH}"
+              echo "  clusterIP: None" >> "${DBPATH}"
+              echo "---" >> "${DBPATH}"
+              echo "apiVersion: apps/v1" >> "${DBPATH}"
+              echo "kind: StatefulSet" >> "${DBPATH}"
+              echo "metadata:" >> "${DBPATH}"
+              echo "  name: mysql-db-${COMP}" >> "${DBPATH}"
+              echo "  namespace: staging-${COMP}" >> "${DBPATH}"
+              echo "spec:" >> "${DBPATH}"
+              echo "  serviceName: mysql-service-${COMP}" >> "${DBPATH}"
+              echo "  replicas: 1" >> "${DBPATH}"
+              echo "  selector:" >> "${DBPATH}"
+              echo "    matchLabels:" >> "${DBPATH}"
+              echo "      app: mysql-db-${COMP}" >> "${DBPATH}"
+              echo "  template:" >> "${DBPATH}"
+              echo "    metadata:" >> "${DBPATH}"
+              echo "      labels:" >> "${DBPATH}"
+              echo "        app: mysql-db-${COMP}" >> "${DBPATH}"
+              echo "    spec:" >> "${DBPATH}"
+              echo "      containers:" >> "${DBPATH}"
+              echo "        - name: mysql" >> "${DBPATH}"
+              echo "          image: mysql:8.0" >> "${DBPATH}"
+              echo "          ports:" >> "${DBPATH}"
+              echo "            - containerPort: 3306" >> "${DBPATH}"
+              echo "          env:" >> "${DBPATH}"
+              echo "            - name: MYSQL_DATABASE" >> "${DBPATH}"
+              echo "              value: \"${COMP//-/_}_db\"" >> "${DBPATH}"
+              echo "            - name: MYSQL_USER" >> "${DBPATH}"
+              echo "              value: \"admin\"" >> "${DBPATH}"
+              echo "            - name: MYSQL_PASSWORD" >> "${DBATH}"
+              echo "              value: \"changeme123\"" >> "${DBPATH}"
+              echo "            - name: MYSQL_ROOT_PASSWORD" >> "${DBPATH}"
+              echo "              value: \"rootpassword123\"" >> "${DBPATH}"
+              echo "          volumeMounts:" >> "${DBPATH}"
+              echo "            - name: mysql-storage" >> "${DBPATH}"
+              echo "              mountPath: /var/lib/mysql" >> "${DBPATH}"
+              echo "          resources:" >> "${DBPATH}"
+              echo "            requests:" >> "${DBPATH}"
+              echo "              memory: \"256Mi\"" >> "${DBPATH}"
+              echo "              cpu: \"250m\"" >> "${DBPATH}"
+              echo "            limits:" >> "${DBPATH}"
+              echo "              memory: \"512Mi\"" >> "${DBPATH}"
+              echo "              cpu: \"500m\"" >> "${DBPATH}"
+              echo "          readinessProbe:" >> "${DBPATH}"
+              echo "            exec:" >> "${DBPATH}"
+              echo "              command: [\"mysqladmin\", \"ping\", \"-h\", \"localhost\"]" >> "${DBPATH}"
+              echo "            initialDelaySeconds: 15" >> "${DBPATH}"
+              echo "            periodSeconds: 5" >> "${DBPATH}"
+              echo "  volumeClaimTemplates:" >> "${DBPATH}"
+              echo "    - metadata:" >> "${DBPATH}"
+              echo "        name: mysql-storage" >> "${DBPATH}"
+              echo "      spec:" >> "${DBPATH}"
+              echo "        accessModes: [\"ReadWriteOnce\"]" >> "${DBPATH}"
+              echo "        resources:" >> "${DBPATH}"
+              echo "          requests:" >> "${DBPATH}"
+              echo "            storage: 1Gi" >> "${DBPATH}"
+              echo "✅ MySQL généré pour ${COMP}"
+              
             elif [ "${DB_TYPE}" = "mongodb" ]; then
-cat > "${DBPATH}" <<EOF
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: mongodb-service-${COMP}
-  namespace: staging-${COMP}
-spec:
-  selector:
-    app: mongodb-${COMP}
-  ports:
-    - port: 27017
-      targetPort: 27017
-  clusterIP: None
----
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: mongodb-${COMP}
-  namespace: staging-${COMP}
-spec:
-  serviceName: "mongodb-service-${COMP}"
-  replicas: 1
-  selector:
-    matchLabels:
-      app: mongodb-${COMP}
-  template:
-    metadata:
-      labels:
-        app: mongodb-${COMP}
-    spec:
-      containers:
-        - name: mongodb
-          image: mongo:6.0
-          ports:
-            - containerPort: 27017
-          env:
-            - name: MONGO_INITDB_DATABASE
-              value: "${COMP//-/_}_db"
-            - name: MONGO_INITDB_ROOT_USERNAME
-              value: "admin"
-            - name: MONGO_INITDB_ROOT_PASSWORD
-              value: "changeme123"
-          volumeMounts:
-            - name: mongodb-storage
-              mountPath: /data/db
-          resources:
-            requests:
-              memory: "256Mi"
-              cpu: "250m"
-            limits:
-              memory: "512Mi"
-              cpu: "500m"
-          readinessProbe:
-            exec:
-              command: ["mongosh", "--eval", "db.adminCommand('ping')"]
-            initialDelaySeconds: 10
-            periodSeconds: 5
-  volumeClaimTemplates:
-    - metadata:
-        name: mongodb-storage
-      spec:
-        accessModes: ["ReadWriteOnce"]
-        resources:
-          requests:
-            storage: 1Gi
-EOF
+              echo "---" > "${DBPATH}"
+              echo "apiVersion: v1" >> "${DBPATH}"
+              echo "kind: Service" >> "${DBPATH}"
+              echo "metadata:" >> "${DBPATH}"
+              echo "  name: mongodb-service-${COMP}" >> "${DBPATH}"
+              echo "  namespace: staging-${COMP}" >> "${DBPATH}"
+              echo "spec:" >> "${DBPATH}"
+              echo "  selector:" >> "${DBPATH}"
+              echo "    app: mongodb-${COMP}" >> "${DBPATH}"
+              echo "  ports:" >> "${DBPATH}"
+              echo "    - port: 27017" >> "${DBPATH}"
+              echo "      targetPort: 27017" >> "${DBPATH}"
+              echo "  clusterIP: None" >> "${DBPATH}"
+              echo "---" >> "${DBPATH}"
+              echo "apiVersion: apps/v1" >> "${DBPATH}"
+              echo "kind: StatefulSet" >> "${DBPATH}"
+              echo "metadata:" >> "${DBPATH}"
+              echo "  name: mongodb-${COMP}" >> "${DBPATH}"
+              echo "  namespace: staging-${COMP}" >> "${DBPATH}"
+              echo "spec:" >> "${DBPATH}"
+              echo "  serviceName: mongodb-service-${COMP}" >> "${DBPATH}"
+              echo "  replicas: 1" >> "${DBPATH}"
+              echo "  selector:" >> "${DBPATH}"
+              echo "    matchLabels:" >> "${DBPATH}"
+              echo "      app: mongodb-${COMP}" >> "${DBPATH}"
+              echo "  template:" >> "${DBPATH}"
+              echo "    metadata:" >> "${DBPATH}"
+              echo "      labels:" >> "${DBPATH}"
+              echo "        app: mongodb-${COMP}" >> "${DBPATH}"
+              echo "    spec:" >> "${DBPATH}"
+              echo "      containers:" >> "${DBPATH}"
+              echo "        - name: mongodb" >> "${DBPATH}"
+              echo "          image: mongo:6.0" >> "${DBPATH}"
+              echo "          ports:" >> "${DBPATH}"
+              echo "            - containerPort: 27017" >> "${DBPATH}"
+              echo "          env:" >> "${DBPATH}"
+              echo "            - name: MONGO_INITDB_DATABASE" >> "${DBPATH}"
+              echo "              value: \"${COMP//-/_}_db\"" >> "${DBPATH}"
+              echo "            - name: MONGO_INITDB_ROOT_USERNAME" >> "${DBPATH}"
+              echo "              value: \"admin\"" >> "${DBPATH}"
+              echo "            - name: MONGO_INITDB_ROOT_PASSWORD" >> "${DBPATH}"
+              echo "              value: \"changeme123\"" >> "${DBPATH}"
+              echo "          volumeMounts:" >> "${DBPATH}"
+              echo "            - name: mongodb-storage" >> "${DBPATH}"
+              echo "              mountPath: /data/db" >> "${DBPATH}"
+              echo "          resources:" >> "${DBPATH}"
+              echo "            requests:" >> "${DBPATH}"
+              echo "              memory: \"256Mi\"" >> "${DBPATH}"
+              echo "              cpu: \"250m\"" >> "${DBPATH}"
+              echo "            limits:" >> "${DBPATH}"
+              echo "              memory: \"512Mi\"" >> "${DBPATH}"
+              echo "              cpu: \"500m\"" >> "${DBPATH}"
+              echo "          readinessProbe:" >> "${DBPATH}"
+              echo "            exec:" >> "${DBPATH}"
+              echo "              command: [\"mongosh\", \"--eval\", \"db.adminCommand('ping')\"]" >> "${DBPATH}"
+              echo "            initialDelaySeconds: 10" >> "${DBPATH}"
+              echo "            periodSeconds: 5" >> "${DBPATH}"
+              echo "  volumeClaimTemplates:" >> "${DBPATH}"
+              echo "    - metadata:" >> "${DBPATH}"
+              echo "        name: mongodb-storage" >> "${DBPATH}"
+              echo "      spec:" >> "${DBPATH}"
+              echo "        accessModes: [\"ReadWriteOnce\"]" >> "${DBPATH}"
+              echo "        resources:" >> "${DBPATH}"
+              echo "          requests:" >> "${DBPATH}"
+              echo "            storage: 1Gi" >> "${DBPATH}"
+              echo "✅ MongoDB généré pour ${COMP}"
             fi
-            echo "✅ Base de données ${DB_TYPE} générée pour ${COMP}"
           }
 
           inject_db_env() {
@@ -668,46 +708,42 @@ EOF
               return 0
             fi
             
-            if grep -q "DATASOURCE_URL\|DATABASE_URL\|MONGO_URI" "${VPATH}" 2>/devID/null; then
+            if grep -q "DATASOURCE_URL\|DATABASE_URL\|MONGO_URI" "${VPATH}" 2>/dev/null; then
               echo "⚠️ Variables DB déjà présentes, ignorées."
               return 0
             fi
             
             if [ "${DB_TYPE}" = "postgresql" ]; then
-cat >> "${VPATH}" <<EOF
-
-env:
-  - name: SPRING_DATASOURCE_URL
-    value: "jdbc:postgresql://postgres-service-${COMP}:5432/${DB_NAME}"
-  - name: SPRING_DATASOURCE_USERNAME
-    value: "admin"
-  - name: SPRING_DATASOURCE_PASSWORD
-    value: "changeme123"
-  - name: SPRING_JPA_HIBERNATE_DDL_AUTO
-    value: "update"
-EOF
+              echo "" >> "${VPATH}"
+              echo "env:" >> "${VPATH}"
+              echo "  - name: SPRING_DATASOURCE_URL" >> "${VPATH}"
+              echo "    value: \"jdbc:postgresql://postgres-service-${COMP}:5432/${DB_NAME}\"" >> "${VPATH}"
+              echo "  - name: SPRING_DATASOURCE_USERNAME" >> "${VPATH}"
+              echo "    value: \"admin\"" >> "${VPATH}"
+              echo "  - name: SPRING_DATASOURCE_PASSWORD" >> "${VPATH}"
+              echo "    value: \"changeme123\"" >> "${VPATH}"
+              echo "  - name: SPRING_JPA_HIBERNATE_DDL_AUTO" >> "${VPATH}"
+              echo "    value: \"update\"" >> "${VPATH}"
+              echo "✅ Variables PostgreSQL injectées pour ${COMP}"
             elif [ "${DB_TYPE}" = "mysql" ]; then
-cat >> "${VPATH}" <<EOF
-
-env:
-  - name: SPRING_DATASOURCE_URL
-    value: "jdbc:mysql://mysql-service-${COMP}:3306/${DB_NAME}?useSSL=false&allowPublicKeyRetrieval=true"
-  - name: SPRING_DATASOURCE_USERNAME
-    value: "admin"
-  - name: SPRING_DATASOURCE_PASSWORD
-    value: "changeme123"
-  - name: SPRING_JPA_HIBERNATE_DDL_AUTO
-    value: "update"
-EOF
+              echo "" >> "${VPATH}"
+              echo "env:" >> "${VPATH}"
+              echo "  - name: SPRING_DATASOURCE_URL" >> "${VPATH}"
+              echo "    value: \"jdbc:mysql://mysql-service-${COMP}:3306/${DB_NAME}?useSSL=false&allowPublicKeyRetrieval=true\"" >> "${VPATH}"
+              echo "  - name: SPRING_DATASOURCE_USERNAME" >> "${VPATH}"
+              echo "    value: \"admin\"" >> "${VPATH}"
+              echo "  - name: SPRING_DATASOURCE_PASSWORD" >> "${VPATH}"
+              echo "    value: \"changeme123\"" >> "${VPATH}"
+              echo "  - name: SPRING_JPA_HIBERNATE_DDL_AUTO" >> "${VPATH}"
+              echo "    value: \"update\"" >> "${VPATH}"
+              echo "✅ Variables MySQL injectées pour ${COMP}"
             elif [ "${DB_TYPE}" = "mongodb" ]; then
-cat >> "${VPATH}" <<EOF
-
-env:
-  - name: SPRING_DATA_MONGODB_URI
-    value: "mongodb://admin:changeme123@mongodb-service-${COMP}:27017/${DB_NAME}?authSource=admin"
-EOF
+              echo "" >> "${VPATH}"
+              echo "env:" >> "${VPATH}"
+              echo "  - name: SPRING_DATA_MONGODB_URI" >> "${VPATH}"
+              echo "    value: \"mongodb://admin:changeme123@mongodb-service-${COMP}:27017/${DB_NAME}?authSource=admin\"" >> "${VPATH}"
+              echo "✅ Variables MongoDB injectées pour ${COMP}"
             fi
-            echo "✅ Variables DB injectées pour ${COMP}"
           }
 
           case "${{ env.DEPLOY_MODE }}" in

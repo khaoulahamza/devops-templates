@@ -112,17 +112,72 @@ jobs:
       # ── DETECT BACKEND TECH ────────────────────────────────────
       - name: Detect backend technology & Java version
         run: |
+          DB_TYPE="none"
+          
+          # Détection pour Java/Maven
           if [ -f "backend/pom.xml" ]; then
             echo "HAS_MAVEN=true" >> "$GITHUB_ENV"
             JAVA_VERSION=$(grep -oP '(?<=<java.version>)[^<]+' backend/pom.xml 2>/dev/null | head -1)
             [ -z "${JAVA_VERSION}" ] && JAVA_VERSION=$(grep -oP '(?<=<maven.compiler.source>)[^<]+' backend/pom.xml 2>/dev/null | head -1)
             [ -z "${JAVA_VERSION}" ] && JAVA_VERSION="17"
             echo "JAVA_VERSION=${JAVA_VERSION}" >> "$GITHUB_ENV"
+            
+            # Détection du type de base de données
+            if grep -q "postgresql" backend/pom.xml; then
+              DB_TYPE="postgresql"
+            elif grep -q "mysql-connector" backend/pom.xml; then
+              DB_TYPE="mysql"
+            elif grep -q "mongodb-driver" backend/pom.xml || grep -q "mongo-java-driver" backend/pom.xml; then
+              DB_TYPE="mongodb"
+            elif grep -q "h2" backend/pom.xml; then
+              DB_TYPE="h2"
+              echo "ℹ️ H2 détecté (base en mémoire, pas de StatefulSet nécessaire)"
+            fi
           else
             echo "HAS_MAVEN=false" >> "$GITHUB_ENV"
           fi
-          [ -f "backend/requirements.txt" ] && echo "HAS_PYTHON=true" >> "$GITHUB_ENV" || echo "HAS_PYTHON=false" >> "$GITHUB_ENV"
-          [ -f "backend/go.mod"           ] && echo "HAS_GO=true"     >> "$GITHUB_ENV" || echo "HAS_GO=false"     >> "$GITHUB_ENV"
+          
+          # Détection pour Python
+          if [ -f "backend/requirements.txt" ]; then
+            echo "HAS_PYTHON=true" >> "$GITHUB_ENV"
+            if grep -q "psycopg2" backend/requirements.txt; then
+              DB_TYPE="postgresql"
+            elif grep -q "mysqlclient" backend/requirements.txt || grep -q "PyMySQL" backend/requirements.txt; then
+              DB_TYPE="mysql"
+            elif grep -q "pymongo" backend/requirements.txt; then
+              DB_TYPE="mongodb"
+            fi
+          else
+            echo "HAS_PYTHON=false" >> "$GITHUB_ENV"
+          fi
+          
+          # Détection pour Go
+          if [ -f "backend/go.mod" ]; then
+            echo "HAS_GO=true" >> "$GITHUB_ENV"
+            if grep -q "lib/pq" backend/go.mod || grep -q "pgx" backend/go.mod; then
+              DB_TYPE="postgresql"
+            elif grep -q "go-sql-driver/mysql" backend/go.mod; then
+              DB_TYPE="mysql"
+            elif grep -q "mongo-driver" backend/go.mod; then
+              DB_TYPE="mongodb"
+            fi
+          else
+            echo "HAS_GO=false" >> "$GITHUB_ENV"
+          fi
+          
+          # Détection pour Node.js backend
+          if [ -f "backend/package.json" ]; then
+            if grep -q '"pg"' backend/package.json; then
+              DB_TYPE="postgresql"
+            elif grep -q '"mysql2"' backend/package.json; then
+              DB_TYPE="mysql"
+            elif grep -q '"mongoose"' backend/package.json; then
+              DB_TYPE="mongodb"
+            fi
+          fi
+          
+          echo "DB_TYPE=${DB_TYPE}" >> "$GITHUB_ENV"
+          echo "✅ Database detected: ${DB_TYPE}"
 
       # ── INSTALL FRONTEND ───────────────────────────────────────
       - name: Install frontend dependencies
@@ -400,8 +455,6 @@ jobs:
           cd gitops-environments
           git config user.email "ci@github.com"
           git config user.name "GitHub Actions"
-          
-          # CORRECTION : On définit l'URL du remote pour que git l'utilise nativement pour push/pull
           git remote set-url origin "${GITOPS_REPO}"
 
           write_values() {
@@ -426,10 +479,321 @@ jobs:
               "${COMP}" "${COMP}" "${COMP}" > "${APATH}"
           }
 
+          # 🆕 Fonction générique : Génère la base de données selon le type détecté
+          write_database() {
+            local COMP="$1"
+            local DB_TYPE="${{ env.DB_TYPE }}"
+            local DBPATH="environments/staging/${COMP}/database.yaml"
+            
+            # Si pas de base de données détectée, ne rien faire
+            if [ "${DB_TYPE}" = "none" ] || [ "${DB_TYPE}" = "h2" ]; then
+              echo "ℹ️ Pas de base de données externe nécessaire pour ${COMP} (type: ${DB_TYPE})"
+              return 0
+            fi
+            
+            # Ne pas écraser si la DB existe déjà
+            [ -f "${DBPATH}" ] && echo "⚠️ Base de données déjà existante pour ${COMP}, ignorée." && return 0
+            
+            mkdir -p "$(dirname "${DBPATH}")"
+            
+            case "${DB_TYPE}" in
+              postgresql)
+                cat > "${DBPATH}" <<EOF
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-service-${COMP}
+  namespace: staging-${COMP}
+  labels:
+    app: postgres-db-${COMP}
+spec:
+  selector:
+    app: postgres-db-${COMP}
+  ports:
+    - port: 5432
+      targetPort: 5432
+  clusterIP: None
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-db-${COMP}
+  namespace: staging-${COMP}
+spec:
+  serviceName: "postgres-service-${COMP}"
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-db-${COMP}
+  template:
+    metadata:
+      labels:
+        app: postgres-db-${COMP}
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:15-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: "${COMP//-/_}_db"
+            - name: POSTGRES_USER
+              value: "admin"
+            - name: POSTGRES_PASSWORD
+              value: "changeme123"
+            - name: PGDATA
+              value: "/var/lib/postgresql/data/pgdata"
+          volumeMounts:
+            - name: postgres-storage
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "admin"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-storage
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+EOF
+                ;;
+                
+              mysql)
+                cat > "${DBPATH}" <<EOF
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-service-${COMP}
+  namespace: staging-${COMP}
+  labels:
+    app: mysql-db-${COMP}
+spec:
+  selector:
+    app: mysql-db-${COMP}
+  ports:
+    - port: 3306
+      targetPort: 3306
+  clusterIP: None
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql-db-${COMP}
+  namespace: staging-${COMP}
+spec:
+  serviceName: "mysql-service-${COMP}"
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mysql-db-${COMP}
+  template:
+    metadata:
+      labels:
+        app: mysql-db-${COMP}
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8.0
+          ports:
+            - containerPort: 3306
+          env:
+            - name: MYSQL_DATABASE
+              value: "${COMP//-/_}_db"
+            - name: MYSQL_USER
+              value: "admin"
+            - name: MYSQL_PASSWORD
+              value: "changeme123"
+            - name: MYSQL_ROOT_PASSWORD
+              value: "rootpassword123"
+          volumeMounts:
+            - name: mysql-storage
+              mountPath: /var/lib/mysql
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          readinessProbe:
+            exec:
+              command: ["mysqladmin", "ping", "-h", "localhost"]
+            initialDelaySeconds: 15
+            periodSeconds: 5
+  volumeClaimTemplates:
+    - metadata:
+        name: mysql-storage
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+EOF
+                ;;
+                
+              mongodb)
+                cat > "${DBPATH}" <<EOF
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb-service-${COMP}
+  namespace: staging-${COMP}
+  labels:
+    app: mongodb-${COMP}
+spec:
+  selector:
+    app: mongodb-${COMP}
+  ports:
+    - port: 27017
+      targetPort: 27017
+  clusterIP: None
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mongodb-${COMP}
+  namespace: staging-${COMP}
+spec:
+  serviceName: "mongodb-service-${COMP}"
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mongodb-${COMP}
+  template:
+    metadata:
+      labels:
+        app: mongodb-${COMP}
+    spec:
+      containers:
+        - name: mongodb
+          image: mongo:6.0
+          ports:
+            - containerPort: 27017
+          env:
+            - name: MONGO_INITDB_DATABASE
+              value: "${COMP//-/_}_db"
+            - name: MONGO_INITDB_ROOT_USERNAME
+              value: "admin"
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              value: "changeme123"
+          volumeMounts:
+            - name: mongodb-storage
+              mountPath: /data/db
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          readinessProbe:
+            exec:
+              command: ["mongosh", "--eval", "db.adminCommand('ping')"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+  volumeClaimTemplates:
+    - metadata:
+        name: mongodb-storage
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi
+EOF
+                ;;
+            esac
+            
+            echo "✅ Base de données ${DB_TYPE} créée pour ${COMP}"
+          }
+
+          # 🆕 Fonction générique : Injecte les variables d'environnement selon le type de DB
+          inject_db_env() {
+            local COMP="$1"
+            local DB_TYPE="${{ env.DB_TYPE }}"
+            local VPATH="environments/staging/${COMP}/values.yaml"
+            local DB_NAME="${COMP//-/_}_db"
+            
+            # Si pas de base de données, ne rien faire
+            if [ "${DB_TYPE}" = "none" ] || [ "${DB_TYPE}" = "h2" ]; then
+              echo "ℹ️ Pas de variables DB à injecter pour ${COMP}"
+              return 0
+            fi
+            
+            # Vérifier si les variables DB existent déjà
+            if grep -q "DATASOURCE_URL\|DATABASE_URL\|MONGO_URI" "${VPATH}" 2>/dev/null; then
+              echo "⚠️ Variables DB déjà présentes pour ${COMP}, ignorées."
+              return 0
+            fi
+            
+            # Ajouter les variables d'environnement selon le type
+            case "${DB_TYPE}" in
+              postgresql)
+                cat >> "${VPATH}" <<EOF
+
+# Variables d'environnement pour PostgreSQL
+env:
+  - name: SPRING_DATASOURCE_URL
+    value: "jdbc:postgresql://postgres-service-${COMP}:5432/${DB_NAME}"
+  - name: SPRING_DATASOURCE_USERNAME
+    value: "admin"
+  - name: SPRING_DATASOURCE_PASSWORD
+    value: "changeme123"
+  - name: SPRING_JPA_HIBERNATE_DDL_AUTO
+    value: "update"
+EOF
+                ;;
+                
+              mysql)
+                cat >> "${VPATH}" <<EOF
+
+# Variables d'environnement pour MySQL
+env:
+  - name: SPRING_DATASOURCE_URL
+    value: "jdbc:mysql://mysql-service-${COMP}:3306/${DB_NAME}?useSSL=false&allowPublicKeyRetrieval=true"
+  - name: SPRING_DATASOURCE_USERNAME
+    value: "admin"
+  - name: SPRING_DATASOURCE_PASSWORD
+    value: "changeme123"
+  - name: SPRING_JPA_HIBERNATE_DDL_AUTO
+    value: "update"
+EOF
+                ;;
+                
+              mongodb)
+                cat >> "${VPATH}" <<EOF
+
+# Variables d'environnement pour MongoDB
+env:
+  - name: SPRING_DATA_MONGODB_URI
+    value: "mongodb://admin:changeme123@mongodb-service-${COMP}:27017/${DB_NAME}?authSource=admin"
+EOF
+                ;;
+            esac
+            
+            echo "✅ Variables DB (${DB_TYPE}) injectées pour ${COMP}"
+          }
+
           case "${{ env.DEPLOY_MODE }}" in
             mono)
               write_values "${APP_NAME}"       "${REGISTRY}/${APP_NAME}"       "${SHA}"
               write_argocd "${APP_NAME}"
+              write_database "${APP_NAME}"
+              inject_db_env "${APP_NAME}"
               COMMIT_MSG="[${APP_NAME}] deploy -> ${SHA}"
               ;;
             front-only)
@@ -440,6 +804,8 @@ jobs:
             back-only)
               write_values "${APP_NAME}-back"  "${REGISTRY}/${APP_NAME}-back"  "${SHA}"
               write_argocd "${APP_NAME}-back"
+              write_database "${APP_NAME}-back"
+              inject_db_env "${APP_NAME}-back"
               COMMIT_MSG="[${APP_NAME}] deploy back -> ${SHA}"
               ;;
             dual)
@@ -447,6 +813,8 @@ jobs:
               write_values "${APP_NAME}-back"  "${REGISTRY}/${APP_NAME}-back"  "${SHA}"
               write_argocd "${APP_NAME}-front"
               write_argocd "${APP_NAME}-back"
+              write_database "${APP_NAME}-back"
+              inject_db_env "${APP_NAME}-back"
               COMMIT_MSG="[${APP_NAME}] deploy front+back -> ${SHA}"
               ;;
           esac
@@ -454,7 +822,5 @@ jobs:
           git add .
           git diff --cached --quiet && echo "Rien à commiter." && exit 0
           git commit -m "${COMMIT_MSG}"
-          
-          # CORRECTION : Utilisation de 'origin' qui contient déjà le token
           git pull --rebase origin main
           git push origin main

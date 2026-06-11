@@ -109,12 +109,11 @@ jobs:
           echo "FRONT_AT_ROOT=${FRONT_AT_ROOT}" >> "$GITHUB_ENV"
           echo "✅ Deploy mode : ${DEPLOY_MODE}"
 
-      # ── DETECT BACKEND TECH ────────────────────────────────────
-      - name: Detect backend technology & Java version
+      # ── DETECT BACKEND TECH & DB ───────────────────────────────
+      - name: Detect backend technology & Database type
         run: |
           DB_TYPE="none"
           
-          # Détection pour Java/Maven
           if [ -f "backend/pom.xml" ]; then
             echo "HAS_MAVEN=true" >> "$GITHUB_ENV"
             JAVA_VERSION=$(grep -oP '(?<=<java.version>)[^<]+' backend/pom.xml 2>/dev/null | head -1)
@@ -122,7 +121,6 @@ jobs:
             [ -z "${JAVA_VERSION}" ] && JAVA_VERSION="17"
             echo "JAVA_VERSION=${JAVA_VERSION}" >> "$GITHUB_ENV"
             
-            # Détection du type de base de données
             if grep -q "postgresql" backend/pom.xml; then
               DB_TYPE="postgresql"
             elif grep -q "mysql-connector" backend/pom.xml; then
@@ -131,48 +129,35 @@ jobs:
               DB_TYPE="mongodb"
             elif grep -q "h2" backend/pom.xml; then
               DB_TYPE="h2"
-              echo "ℹ️ H2 détecté (base en mémoire, pas de StatefulSet nécessaire)"
             fi
           else
             echo "HAS_MAVEN=false" >> "$GITHUB_ENV"
           fi
           
-          # Détection pour Python
           if [ -f "backend/requirements.txt" ]; then
             echo "HAS_PYTHON=true" >> "$GITHUB_ENV"
-            if grep -q "psycopg2" backend/requirements.txt; then
-              DB_TYPE="postgresql"
-            elif grep -q "mysqlclient" backend/requirements.txt || grep -q "PyMySQL" backend/requirements.txt; then
-              DB_TYPE="mysql"
-            elif grep -q "pymongo" backend/requirements.txt; then
-              DB_TYPE="mongodb"
+            if grep -q "psycopg2" backend/requirements.txt; then DB_TYPE="postgresql"
+            elif grep -q "mysqlclient" backend/requirements.txt || grep -q "PyMySQL" backend/requirements.txt; then DB_TYPE="mysql"
+            elif grep -q "pymongo" backend/requirements.txt; then DB_TYPE="mongodb"
             fi
           else
             echo "HAS_PYTHON=false" >> "$GITHUB_ENV"
           fi
           
-          # Détection pour Go
           if [ -f "backend/go.mod" ]; then
             echo "HAS_GO=true" >> "$GITHUB_ENV"
-            if grep -q "lib/pq" backend/go.mod || grep -q "pgx" backend/go.mod; then
-              DB_TYPE="postgresql"
-            elif grep -q "go-sql-driver/mysql" backend/go.mod; then
-              DB_TYPE="mysql"
-            elif grep -q "mongo-driver" backend/go.mod; then
-              DB_TYPE="mongodb"
+            if grep -q "lib/pq" backend/go.mod || grep -q "pgx" backend/go.mod; then DB_TYPE="postgresql"
+            elif grep -q "go-sql-driver/mysql" backend/go.mod; then DB_TYPE="mysql"
+            elif grep -q "mongo-driver" backend/go.mod; then DB_TYPE="mongodb"
             fi
           else
             echo "HAS_GO=false" >> "$GITHUB_ENV"
           fi
           
-          # Détection pour Node.js backend
           if [ -f "backend/package.json" ]; then
-            if grep -q '"pg"' backend/package.json; then
-              DB_TYPE="postgresql"
-            elif grep -q '"mysql2"' backend/package.json; then
-              DB_TYPE="mysql"
-            elif grep -q '"mongoose"' backend/package.json; then
-              DB_TYPE="mongodb"
+            if grep -q '"pg"' backend/package.json; then DB_TYPE="postgresql"
+            elif grep -q '"mysql2"' backend/package.json; then DB_TYPE="mysql"
+            elif grep -q '"mongoose"' backend/package.json; then DB_TYPE="mongodb"
             fi
           fi
           
@@ -184,15 +169,11 @@ jobs:
         if: env.HAS_FRONT == 'true'
         run: |
           if [ "${{ env.FRONT_AT_ROOT }}" = "true" ]; then
-            docker run --rm \
-              --user "$(id -u):$(id -g)" \
-              -v "$PWD:/app" -w /app \
+            docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/app" -w /app \
               192.168.1.239:8085/selfkhaoula/node:20-alpine \
               npm install --legacy-peer-deps --loglevel=error --no-fund
           else
-            docker run --rm \
-              --user "$(id -u):$(id -g)" \
-              -v "$PWD/frontend:/app" -w /app \
+            docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/frontend:/app" -w /app \
               192.168.1.239:8085/selfkhaoula/node:20-alpine \
               npm install --legacy-peer-deps --loglevel=error --no-fund
           fi
@@ -202,17 +183,11 @@ jobs:
         if: env.HAS_FRONT == 'true'
         run: |
           if [ "${{ env.FRONT_AT_ROOT }}" = "true" ]; then
-            docker run --rm \
-              --user "$(id -u):$(id -g)" \
-              -v "$PWD:/app" -w /app \
-              --cap-add=SYS_ADMIN \
+            docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/app" -w /app --cap-add=SYS_ADMIN \
               192.168.1.239:8085/selfkhaoula/node:20-browsers \
               npm test -- --watch=false --browsers=ChromeHeadlessNoSandbox 2>&1 | tee frontend-test.log
           else
-            docker run --rm \
-              --user "$(id -u):$(id -g)" \
-              -v "$PWD/frontend:/app" -w /app \
-              --cap-add=SYS_ADMIN \
+            docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/frontend:/app" -w /app --cap-add=SYS_ADMIN \
               192.168.1.239:8085/selfkhaoula/node:20-browsers \
               npm test -- --watch=false --browsers=ChromeHeadlessNoSandbox 2>&1 | tee frontend-test.log
           fi
@@ -220,11 +195,8 @@ jobs:
       - name: "🧪 Test backend (Java/Maven)"
         if: env.HAS_MAVEN == 'true'
         run: |
-          docker run --rm \
-            --network host \
-            --user "$(id -u):$(id -g)" \
-            -v "$PWD/backend:/app" -w /app \
-            -v "$HOME/.m2:/root/.m2" \
+          docker run --rm --network host --user "$(id -u):$(id -g)" \
+            -v "$PWD/backend:/app" -w /app -v "$HOME/.m2:/root/.m2" \
             -e MAVEN_OPTS="-Xmx512m" \
             -e SPRING_DATASOURCE_URL="jdbc:postgresql://localhost:5432/testdb" \
             -e SPRING_DATASOURCE_USERNAME="testuser" \
@@ -233,26 +205,21 @@ jobs:
             mvn test -B -Dspring.profiles.active=test -DskipTests=false \
           || {
             echo "=== SUREFIRE FAILURE REPORTS ==="
-            find "$PWD/backend/target/surefire-reports" -name "*.txt" \
-              -exec echo "--- {} ---" \; -exec cat {} \; 2>/dev/null || true
+            find "$PWD/backend/target/surefire-reports" -name "*.txt" -exec echo "--- {} ---" \; -exec cat {} \; 2>/dev/null || true
             exit 1
           }
 
       - name: "🧪 Test backend (Python)"
         if: env.HAS_PYTHON == 'true'
         run: |
-          docker run --rm \
-            --user "$(id -u):$(id -g)" \
-            -v "$PWD/backend:/app" -w /app \
+          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/backend:/app" -w /app \
             192.168.1.239:8085/selfkhaoula/python:3.11-slim \
             sh -c "pip install -r requirements.txt -q && pytest --tb=short"
 
       - name: "🧪 Test backend (Go)"
         if: env.HAS_GO == 'true'
         run: |
-          docker run --rm \
-            --user "$(id -u):$(id -g)" \
-            -v "$PWD/backend:/app" -w /app \
+          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/backend:/app" -w /app \
             192.168.1.239:8085/selfkhaoula/golang:1.22-alpine \
             go test ./... -v
 
@@ -261,9 +228,7 @@ jobs:
         if: env.HAS_FRONT == 'true'
         run: |
           MOUNT=$( [ "${{ env.FRONT_AT_ROOT }}" = "true" ] && echo "$PWD" || echo "$PWD/frontend" )
-          docker run --rm \
-            --user "$(id -u):$(id -g)" \
-            -v "${MOUNT}:/app" -w /app \
+          docker run --rm --user "$(id -u):$(id -g)" -v "${MOUNT}:/app" -w /app \
             192.168.1.239:8085/selfkhaoula/node:20-alpine \
             sh -c "if node -e \"const p=require('./package.json'); process.exit(p.scripts&&p.scripts.lint?0:1);\" 2>/dev/null; then npm run lint; else echo '⚠️ Pas de script lint, ignoré.'; fi"
 
@@ -271,9 +236,7 @@ jobs:
         if: env.HAS_MAVEN == 'true'
         run: |
           if grep -qi "checkstyle" backend/pom.xml; then
-            docker run --rm \
-              --user "$(id -u):$(id -g)" \
-              -v "$PWD/backend:/app" -w /app \
+            docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/backend:/app" -w /app \
               192.168.1.239:8085/selfkhaoula/maven:3.9-eclipse-temurin-${{ env.JAVA_VERSION }} \
               mvn checkstyle:check -B
           else
@@ -296,8 +259,7 @@ jobs:
             local DIR; DIR=$(dirname "${FILE}")
             local BASE; BASE=$(basename "${FILE}")
             echo "→ Lint: ${FILE}"
-            docker run --rm \
-              -v "${GITHUB_WORKSPACE}/${DIR}:/mnt" \
+            docker run --rm -v "${GITHUB_WORKSPACE}/${DIR}:/mnt" \
               192.168.1.239:8085/selfkhaoula/hadolint:latest \
               hadolint --failure-threshold error "/mnt/${BASE}" || \
               echo "⚠️ hadolint warnings ignorés pour ${FILE}"
@@ -380,10 +342,7 @@ jobs:
         run: |
           echo "→ Smoke test : ${{ env.LOCAL_IMAGE }}"
           CONTAINER_ID=$(docker run -d --rm "${{ env.LOCAL_IMAGE }}" 2>/dev/null || true)
-          if [ -z "${CONTAINER_ID}" ]; then
-            echo "❌ Container non démarré"
-            exit 1
-          fi
+          if [ -z "${CONTAINER_ID}" ]; then echo "❌ Container non démarré"; exit 1; fi
           sleep 5
           STATUS=$(docker inspect --format='{{.State.Status}}' "${CONTAINER_ID}" 2>/dev/null || echo "gone")
           if [ "${STATUS}" = "exited" ]; then
@@ -400,10 +359,7 @@ jobs:
           for IMAGE in "${{ env.FRONT_LOCAL_IMAGE }}" "${{ env.BACK_LOCAL_IMAGE }}"; do
             echo "→ Smoke test : ${IMAGE}"
             CONTAINER_ID=$(docker run -d --rm "${IMAGE}" 2>/dev/null || true)
-            if [ -z "${CONTAINER_ID}" ]; then
-              echo "❌ Container non démarré"
-              exit 1
-            fi
+            if [ -z "${CONTAINER_ID}" ]; then echo "❌ Container non démarré"; exit 1; fi
             sleep 5
             STATUS=$(docker inspect --format='{{.State.Status}}' "${CONTAINER_ID}" 2>/dev/null || echo "gone")
             if [ "${STATUS}" = "exited" ]; then
@@ -439,10 +395,8 @@ jobs:
         env:
           GITOPS_PAT: ${{ secrets.GITOPS_TOKEN }}
         run: |
-          # GARDE-FOU : Vérifie que le token a bien été transmis
           if [ -z "${GITOPS_PAT}" ]; then
             echo "❌ ERREUR CRITIQUE: Le secret GITOPS_TOKEN est vide ou non transmis !"
-            echo "Vérifiez que le workflow appelant utilise bien 'secrets: inherit'."
             exit 1
           fi
 
@@ -462,7 +416,7 @@ jobs:
             local VPATH="environments/staging/${COMP}/values.yaml"
             mkdir -p "$(dirname "${VPATH}")"
             if [ ! -f "${VPATH}" ]; then
-              printf 'name: %s\nreplicaCount: 1\nimage:\n  repository: "%s"\n  tag: "%s"\n  pullPolicy: IfNotPresent\nimagePullSecrets:\n  - name: nexus-registry-secret\nservice:\n  type: ClusterIP\n  port: 80\n  targetPort: 80\ningress:\n  enabled: true\n  className: nginx\n  host: %s.staging.local\n  path: /\n  pathType: Prefix\nresources:\n  limits:\n    cpu: 500m\n    memory: 512Mi\n  requests:\n    cpu: 250m\n    memory: 256Mi\nenv: []\n' \
+              printf 'name: %s\nreplicaCount: 1\nimage:\n  repository: "%s"\n  tag: "%s"\n  pullPolicy: IfNotPresent\nimagePullSecrets:\n  - name: nexus-registry-secret\nservice:\n  type: ClusterIP\n  port: 80\n  targetPort: 80\ningress:\n  enabled: true\n  className: nginx\n  host: %s.staging.local\n  path: /\n  pathType: Prefix\nresources:\n  limits:\n    cpu: 500m\n    memory: 512Mi\n  requests:\n    cpu: 250m\n    memory: 256Mi\n' \
                 "${COMP}" "${REPO}" "${TAG}" "${COMP}" > "${VPATH}"
             else
               sed -i "s|repository:.*|repository: \"${REPO}\"|" "${VPATH}"
@@ -479,34 +433,27 @@ jobs:
               "${COMP}" "${COMP}" "${COMP}" > "${APATH}"
           }
 
-          # 🆕 Fonction générique : Génère la base de données selon le type détecté
           write_database() {
             local COMP="$1"
             local DB_TYPE="${{ env.DB_TYPE }}"
             local DBPATH="environments/staging/${COMP}/database.yaml"
             
-            # Si pas de base de données détectée, ne rien faire
             if [ "${DB_TYPE}" = "none" ] || [ "${DB_TYPE}" = "h2" ]; then
-              echo "ℹ️ Pas de base de données externe nécessaire pour ${COMP} (type: ${DB_TYPE})"
+              echo "ℹ️ Pas de base de données externe nécessaire pour ${COMP}"
               return 0
             fi
             
-            # Ne pas écraser si la DB existe déjà
-            [ -f "${DBPATH}" ] && echo "⚠️ Base de données déjà existante pour ${COMP}, ignorée." && return 0
-            
+            [ -f "${DBPATH}" ] && echo "⚠️ Base de données déjà existante, ignorée." && return 0
             mkdir -p "$(dirname "${DBPATH}")"
             
-            case "${DB_TYPE}" in
-              postgresql)
-                cat > "${DBPATH}" <<EOF
+            if [ "${DB_TYPE}" = "postgresql" ]; then
+cat > "${DBPATH}" <<EOF
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: postgres-service-${COMP}
   namespace: staging-${COMP}
-  labels:
-    app: postgres-db-${COMP}
 spec:
   selector:
     app: postgres-db-${COMP}
@@ -569,18 +516,14 @@ spec:
           requests:
             storage: 1Gi
 EOF
-                ;;
-                
-              mysql)
-                cat > "${DBPATH}" <<EOF
+            elif [ "${DB_TYPE}" = "mysql" ]; then
+cat > "${DBPATH}" <<EOF
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: mysql-service-${COMP}
   namespace: staging-${COMP}
-  labels:
-    app: mysql-db-${COMP}
 spec:
   selector:
     app: mysql-db-${COMP}
@@ -643,18 +586,14 @@ spec:
           requests:
             storage: 1Gi
 EOF
-                ;;
-                
-              mongodb)
-                cat > "${DBPATH}" <<EOF
+            elif [ "${DB_TYPE}" = "mongodb" ]; then
+cat > "${DBPATH}" <<EOF
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: mongodb-service-${COMP}
   namespace: staging-${COMP}
-  labels:
-    app: mongodb-${COMP}
 spec:
   selector:
     app: mongodb-${COMP}
@@ -715,37 +654,28 @@ spec:
           requests:
             storage: 1Gi
 EOF
-                ;;
-            esac
-            
-            echo "✅ Base de données ${DB_TYPE} créée pour ${COMP}"
+            fi
+            echo "✅ Base de données ${DB_TYPE} générée pour ${COMP}"
           }
 
-          # 🆕 Fonction générique : Injecte les variables d'environnement selon le type de DB
           inject_db_env() {
             local COMP="$1"
             local DB_TYPE="${{ env.DB_TYPE }}"
             local VPATH="environments/staging/${COMP}/values.yaml"
             local DB_NAME="${COMP//-/_}_db"
             
-            # Si pas de base de données, ne rien faire
             if [ "${DB_TYPE}" = "none" ] || [ "${DB_TYPE}" = "h2" ]; then
-              echo "ℹ️ Pas de variables DB à injecter pour ${COMP}"
               return 0
             fi
             
-            # Vérifier si les variables DB existent déjà
-            if grep -q "DATASOURCE_URL\|DATABASE_URL\|MONGO_URI" "${VPATH}" 2>/dev/null; then
-              echo "⚠️ Variables DB déjà présentes pour ${COMP}, ignorées."
+            if grep -q "DATASOURCE_URL\|DATABASE_URL\|MONGO_URI" "${VPATH}" 2>/devID/null; then
+              echo "⚠️ Variables DB déjà présentes, ignorées."
               return 0
             fi
             
-            # Ajouter les variables d'environnement selon le type
-            case "${DB_TYPE}" in
-              postgresql)
-                cat >> "${VPATH}" <<EOF
+            if [ "${DB_TYPE}" = "postgresql" ]; then
+cat >> "${VPATH}" <<EOF
 
-# Variables d'environnement pour PostgreSQL
 env:
   - name: SPRING_DATASOURCE_URL
     value: "jdbc:postgresql://postgres-service-${COMP}:5432/${DB_NAME}"
@@ -756,12 +686,9 @@ env:
   - name: SPRING_JPA_HIBERNATE_DDL_AUTO
     value: "update"
 EOF
-                ;;
-                
-              mysql)
-                cat >> "${VPATH}" <<EOF
+            elif [ "${DB_TYPE}" = "mysql" ]; then
+cat >> "${VPATH}" <<EOF
 
-# Variables d'environnement pour MySQL
 env:
   - name: SPRING_DATASOURCE_URL
     value: "jdbc:mysql://mysql-service-${COMP}:3306/${DB_NAME}?useSSL=false&allowPublicKeyRetrieval=true"
@@ -772,20 +699,15 @@ env:
   - name: SPRING_JPA_HIBERNATE_DDL_AUTO
     value: "update"
 EOF
-                ;;
-                
-              mongodb)
-                cat >> "${VPATH}" <<EOF
+            elif [ "${DB_TYPE}" = "mongodb" ]; then
+cat >> "${VPATH}" <<EOF
 
-# Variables d'environnement pour MongoDB
 env:
   - name: SPRING_DATA_MONGODB_URI
     value: "mongodb://admin:changeme123@mongodb-service-${COMP}:27017/${DB_NAME}?authSource=admin"
 EOF
-                ;;
-            esac
-            
-            echo "✅ Variables DB (${DB_TYPE}) injectées pour ${COMP}"
+            fi
+            echo "✅ Variables DB injectées pour ${COMP}"
           }
 
           case "${{ env.DEPLOY_MODE }}" in
